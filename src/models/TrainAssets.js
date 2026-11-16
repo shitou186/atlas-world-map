@@ -20,42 +20,46 @@ class TrainAssets {
     return this.pending;
   }
   static async read() {
-    const [i, o] = await Promise.all([
+    // 模型和纹理并行加载，全部就绪后再组装列车各节几何体。
+    const [response, texture] = await Promise.all([
       fetch('/models/train/models.bin'),
       new TextureLoader().loadAsync('/models/train/Textures/colormap.png'),
     ]);
-    if (!i.ok) {
+    if (!response.ok) {
       throw new Error('列车模型不可用');
     }
-    const p = SceneCodec.decode(await i.arrayBuffer());
-    o.flipY = false;
-    o.colorSpace = SRGBColorSpace;
-    this.texture = o;
-    for (const x of ['a', 'b', 'c']) {
-      const T = p[x];
-      const w = new BufferGeometry();
-      for (const [l, D] of Object.entries(T.attributes)) {
-        w.setAttribute(l, new BufferAttribute(D.array, D.itemSize, D.normalized));
+    const models = SceneCodec.decode(await response.arrayBuffer());
+    texture.flipY = false;
+    texture.colorSpace = SRGBColorSpace;
+    this.texture = texture;
+    for (const modelName of ['a', 'b', 'c']) {
+      const model = models[modelName];
+      const geometry = new BufferGeometry();
+      for (const [attributeName, attribute] of Object.entries(model.attributes)) {
+        geometry.setAttribute(
+          attributeName,
+          new BufferAttribute(attribute.array, attribute.itemSize, attribute.normalized),
+        );
       }
-      w.setIndex(new BufferAttribute(T.index.array, 1));
-      w.boundingBox = new Box3(
-        new Vector3().fromArray(T.boundingBox.min),
-        new Vector3().fromArray(T.boundingBox.max),
+      geometry.setIndex(new BufferAttribute(model.index.array, 1));
+      geometry.boundingBox = new Box3(
+        new Vector3().fromArray(model.boundingBox.min),
+        new Vector3().fromArray(model.boundingBox.max),
       );
-      w.boundingSphere = new Sphere(
-        new Vector3().fromArray(T.boundingSphere.center),
-        T.boundingSphere.radius,
+      geometry.boundingSphere = new Sphere(
+        new Vector3().fromArray(model.boundingSphere.center),
+        model.boundingSphere.radius,
       );
       this.models.push({
-        geometry: w,
-        texture: o,
+        geometry: geometry,
+        texture: texture,
       });
     }
     return this.models;
   }
   static dispose() {
-    for (const i of this.models) {
-      i.geometry.dispose();
+    for (const model of this.models) {
+      model.geometry.dispose();
     }
     this.texture?.dispose();
     this.texture = null;

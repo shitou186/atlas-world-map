@@ -2,167 +2,209 @@
 import { PolygonGrid } from './PolygonGrid.js';
 import ClipperLib from 'clipper-lib';
 class RoadMarkings {
-  constructor(A) {
-    this.landscape = A;
-    this.roads = A.roads;
-    const C = new Map();
-    for (const Q of this.roads) {
-      Q.nodes = [];
-      for (let i = 0; i < Q.points.length; i++) {
-        const E = Q.points[i];
-        const s = E[0].toFixed(4) + '/' + E[1].toFixed(4);
-        if (!C.has(s)) {
-          C.set(s, {
+  constructor(landscape) {
+    this.landscape = landscape;
+    this.roads = landscape.roads;
+    // 以四位小数坐标合并道路节点，累计连接度以识别需要留白的交叉口。
+    const nodesByPosition = new Map();
+    for (const road of this.roads) {
+      road.nodes = [];
+      for (let pointIndex = 0; pointIndex < road.points.length; pointIndex++) {
+        const point = road.points[pointIndex];
+        const nodeKey = point[0].toFixed(4) + '/' + point[1].toFixed(4);
+        if (!nodesByPosition.has(nodeKey)) {
+          nodesByPosition.set(nodeKey, {
             roads: new Set(),
             degree: 0,
           });
         }
-        const w = C.get(s);
-        w.roads.add(Q);
-        w.degree += (i > 0 ? 1 : 0) + (i < Q.points.length - 1 ? 1 : 0);
-        Q.nodes.push(w);
+        const node = nodesByPosition.get(nodeKey);
+        node.roads.add(road);
+        node.degree += (pointIndex > 0 ? 1 : 0) + (pointIndex < road.points.length - 1 ? 1 : 0);
+        road.nodes.push(node);
       }
     }
     this.owners = new Map();
-    for (const Q of this.roads) {
-      if (!Q.path) {
-        this.owners.set(Q.polygon, Q);
+    for (const road of this.roads) {
+      if (!road.path) {
+        this.owners.set(road.polygon, road);
       }
     }
     this.grid = new PolygonGrid([...this.owners.keys()], 64);
   }
   build() {
-    for (const A of this.roads) {
-      if (A.path || A.tags.lane_markings === 'no' || A.kind !== 'asphalt') {
+    for (const road of this.roads) {
+      if (road.path || road.tags.lane_markings === 'no' || road.kind !== 'asphalt') {
         continue;
       }
-      const C = [];
-      for (const t of this.grid.query(A.polygon[0])) {
-        if (this.owners.get(t) !== A) {
-          C.push(t);
+      const overlappingPolygons = [];
+      for (const polygon of this.grid.query(road.polygon[0])) {
+        if (this.owners.get(polygon) !== road) {
+          overlappingPolygons.push(polygon);
         }
       }
-      const Q = [0];
-      const i = [];
-      for (let t = 0; t < A.points.length; t++) {
-        const y = A.points[t];
-        const Y = A.points[Math.max(0, t - 1)];
-        const N = A.points[Math.min(A.points.length - 1, t + 1)];
-        const a = Math.hypot(y[0] - Y[0], y[1] - Y[1]);
-        const K = Math.hypot(N[0] - y[0], N[1] - y[1]);
-        const e = a ? -(y[1] - Y[1]) / a : -(N[1] - y[1]) / K;
-        const G = a ? (y[0] - Y[0]) / a : (N[0] - y[0]) / K;
-        const J = K ? -(N[1] - y[1]) / K : e;
-        const S = K ? (N[0] - y[0]) / K : G;
-        const U = Math.max(0.25, 1 + e * J + G * S);
-        i.push([(e + J) / U, (G + S) / U]);
-        if (t) {
-          Q.push(Q.at(-1) + a);
+      // 累计里程控制虚线相位，前后段法线的斜接向量保持转角处标线连续。
+      const distances = [0];
+      const miterNormals = [];
+      for (let pointIndex = 0; pointIndex < road.points.length; pointIndex++) {
+        const point = road.points[pointIndex];
+        const previousPoint = road.points[Math.max(0, pointIndex - 1)];
+        const nextPoint = road.points[Math.min(road.points.length - 1, pointIndex + 1)];
+        const previousLength = Math.hypot(point[0] - previousPoint[0], point[1] - previousPoint[1]);
+        const nextLength = Math.hypot(nextPoint[0] - point[0], nextPoint[1] - point[1]);
+        const previousNormalX = previousLength
+          ? -(point[1] - previousPoint[1]) / previousLength
+          : -(nextPoint[1] - point[1]) / nextLength;
+        const previousNormalY = previousLength
+          ? (point[0] - previousPoint[0]) / previousLength
+          : (nextPoint[0] - point[0]) / nextLength;
+        const nextNormalX = nextLength ? -(nextPoint[1] - point[1]) / nextLength : previousNormalX;
+        const nextNormalY = nextLength ? (nextPoint[0] - point[0]) / nextLength : previousNormalY;
+        const miterDenominator = Math.max(
+          0.25,
+          1 + previousNormalX * nextNormalX + previousNormalY * nextNormalY,
+        );
+        miterNormals.push([
+          (previousNormalX + nextNormalX) / miterDenominator,
+          (previousNormalY + nextNormalY) / miterDenominator,
+        ]);
+        if (pointIndex) {
+          distances.push(distances.at(-1) + previousLength);
         }
       }
-      const E = [];
-      for (let t = 0; t < A.nodes.length; t++) {
-        const y = A.nodes[t];
-        if (y.degree < 3) {
+      // 将交叉口转为里程区间，从每段实线或虚线中扣除这些区间。
+      const junctionIntervals = [];
+      for (let nodeIndex = 0; nodeIndex < road.nodes.length; nodeIndex++) {
+        const node = road.nodes[nodeIndex];
+        if (node.degree < 3) {
           continue;
         }
-        let Y = 2;
-        for (const N of y.roads) {
-          if (!N.path) {
-            Y = Math.max(Y, N.width / 2 + 2);
+        let junctionRadius = 2;
+        for (const connectedRoad of node.roads) {
+          if (!connectedRoad.path) {
+            junctionRadius = Math.max(junctionRadius, connectedRoad.width / 2 + 2);
           }
         }
-        E.push([Q[t] - Y, Q[t] + Y]);
+        junctionIntervals.push([
+          distances[nodeIndex] - junctionRadius,
+          distances[nodeIndex] + junctionRadius,
+        ]);
       }
-      const s = [];
-      for (let t = 0; t <= A.lanes; t++) {
-        const y = t === 0 || t === A.lanes;
-        if (y && ['residential', 'service', 'living_street'].includes(A.tags.highway)) {
+      const markingPolygons = [];
+      for (let laneIndex = 0; laneIndex <= road.lanes; laneIndex++) {
+        const isEdge = laneIndex === 0 || laneIndex === road.lanes;
+        if (isEdge && ['residential', 'service', 'living_street'].includes(road.tags.highway)) {
           continue;
         }
-        const Y = y ? (t ? 1 : -1) * (A.width / 2 - 0.28) : A.width * (t / A.lanes - 0.5);
-        for (let N = 1; N < A.points.length; N++) {
-          const a = A.points[N - 1];
-          const K = A.points[N];
-          const e = Q[N] - Q[N - 1];
-          const G = Q[N - 1];
-          const J = Q[N];
-          for (let S = y ? G : Math.floor(G / 8) * 8; S < J; S += y ? e : 8) {
-            const U = Math.max(G, S);
-            const j = Math.min(J, S + (y ? e : 3));
-            if (j <= U) {
+        const lateralOffset = isEdge
+          ? (laneIndex ? 1 : -1) * (road.width / 2 - 0.28)
+          : road.width * (laneIndex / road.lanes - 0.5);
+        for (let segmentIndex = 1; segmentIndex < road.points.length; segmentIndex++) {
+          const segmentStart = road.points[segmentIndex - 1];
+          const segmentEnd = road.points[segmentIndex];
+          const segmentLength = distances[segmentIndex] - distances[segmentIndex - 1];
+          const segmentStartDistance = distances[segmentIndex - 1];
+          const segmentEndDistance = distances[segmentIndex];
+          for (
+            let dashStart = isEdge
+              ? segmentStartDistance
+              : Math.floor(segmentStartDistance / 8) * 8;
+            dashStart < segmentEndDistance;
+            dashStart += isEdge ? segmentLength : 8
+          ) {
+            const clippedStart = Math.max(segmentStartDistance, dashStart);
+            const clippedEnd = Math.min(
+              segmentEndDistance,
+              dashStart + (isEdge ? segmentLength : 3),
+            );
+            if (clippedEnd <= clippedStart) {
               continue;
             }
-            let n = [[U, j]];
-            for (const F of E) {
-              const q = [];
-              for (const u of n) {
-                if (F[1] <= u[0] || F[0] >= u[1]) {
-                  q.push(u);
+            let visibleIntervals = [[clippedStart, clippedEnd]];
+            for (const junctionInterval of junctionIntervals) {
+              const remainingIntervals = [];
+              for (const interval of visibleIntervals) {
+                if (junctionInterval[1] <= interval[0] || junctionInterval[0] >= interval[1]) {
+                  remainingIntervals.push(interval);
                 } else {
-                  if (F[0] > u[0]) {
-                    q.push([u[0], F[0]]);
+                  if (junctionInterval[0] > interval[0]) {
+                    remainingIntervals.push([interval[0], junctionInterval[0]]);
                   }
-                  if (F[1] < u[1]) {
-                    q.push([F[1], u[1]]);
+                  if (junctionInterval[1] < interval[1]) {
+                    remainingIntervals.push([junctionInterval[1], interval[1]]);
                   }
                 }
               }
-              n = q;
+              visibleIntervals = remainingIntervals;
             }
-            for (const F of n) {
-              const q = [];
-              for (const [u, x] of [
-                [F[0], -0.07],
-                [F[1], -0.07],
-                [F[1], 0.07],
-                [F[0], 0.07],
+            for (const interval of visibleIntervals) {
+              const markingRing = [];
+              for (const [distance, edgeOffset] of [
+                [interval[0], -0.07],
+                [interval[1], -0.07],
+                [interval[1], 0.07],
+                [interval[0], 0.07],
               ]) {
-                const b = (u - G) / e;
-                const m = [
-                  i[N - 1][0] + (i[N][0] - i[N - 1][0]) * b,
-                  i[N - 1][1] + (i[N][1] - i[N - 1][1]) * b,
+                const segmentRatio = (distance - segmentStartDistance) / segmentLength;
+                const miterNormal = [
+                  miterNormals[segmentIndex - 1][0] +
+                    (miterNormals[segmentIndex][0] - miterNormals[segmentIndex - 1][0]) *
+                      segmentRatio,
+                  miterNormals[segmentIndex - 1][1] +
+                    (miterNormals[segmentIndex][1] - miterNormals[segmentIndex - 1][1]) *
+                      segmentRatio,
                 ];
-                q.push([
-                  a[0] + (K[0] - a[0]) * b + m[0] * (Y + x),
-                  a[1] + (K[1] - a[1]) * b + m[1] * (Y + x),
+                markingRing.push([
+                  segmentStart[0] +
+                    (segmentEnd[0] - segmentStart[0]) * segmentRatio +
+                    miterNormal[0] * (lateralOffset + edgeOffset),
+                  segmentStart[1] +
+                    (segmentEnd[1] - segmentStart[1]) * segmentRatio +
+                    miterNormal[1] * (lateralOffset + edgeOffset),
                 ]);
               }
-              q.push(q[0]);
-              s.push([q]);
+              markingRing.push(markingRing[0]);
+              markingPolygons.push([markingRing]);
             }
           }
         }
       }
-      const w = C.length ? this.landscape.combine(s, C) : s;
-      this.landscape.surface(w, 'markings', A, '#f2efe4');
+      const clippedMarkings = overlappingPolygons.length
+        ? this.landscape.combine(markingPolygons, overlappingPolygons)
+        : markingPolygons;
+      this.landscape.surface(clippedMarkings, 'markings', road, '#f2efe4');
     }
   }
-  ground(A, C) {
-    const Q = new PolygonGrid(A, 64);
-    const i = new PolygonGrid(C, 64);
-    for (const [E, s] of Q.cells) {
-      const [w, t] = E.split('/').map(Number);
-      const y = w * 64;
-      const Y = t * 64;
-      const N = [
-        [y, Y],
-        [y + 64, Y],
-        [y + 64, Y + 64],
-        [y, Y + 64],
-        [y, Y],
+  ground(markingPolygons, roadPolygons) {
+    // 按 64 米网格求标线与路面的交集，避免一次性组合整个场景的多边形。
+    const markingGrid = new PolygonGrid(markingPolygons, 64);
+    const roadGrid = new PolygonGrid(roadPolygons, 64);
+    for (const [cellKey, entries] of markingGrid.cells) {
+      const [cellX, cellY] = cellKey.split('/').map(Number);
+      const originX = cellX * 64;
+      const originY = cellY * 64;
+      const cellRing = [
+        [originX, originY],
+        [originX + 64, originY],
+        [originX + 64, originY + 64],
+        [originX, originY + 64],
+        [originX, originY],
       ];
-      const a = i.query(N);
-      if (!a.length) {
+      const nearbyRoads = roadGrid.query(cellRing);
+      if (!nearbyRoads.length) {
         continue;
       }
-      const K = this.landscape.combine(
-        s.map((G) => G.polygon),
-        [[N]],
+      const clippedMarkings = this.landscape.combine(
+        entries.map((entry) => entry.polygon),
+        [[cellRing]],
         ClipperLib.ClipType.ctIntersection,
       );
-      const e = this.landscape.combine(K, a, ClipperLib.ClipType.ctIntersection);
-      this.landscape.topology.roadMarkings.push(...e);
+      const groundMarkings = this.landscape.combine(
+        clippedMarkings,
+        nearbyRoads,
+        ClipperLib.ClipType.ctIntersection,
+      );
+      this.landscape.topology.roadMarkings.push(...groundMarkings);
     }
   }
 }

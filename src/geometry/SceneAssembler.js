@@ -7,125 +7,142 @@ import { TileClipping } from './TileClipping.js';
 import { MeshPacking } from './MeshPacking.js';
 class SceneAssembler {
   static VERSION = 3;
-  constructor({ maxLandcoverTiles: A = 16, maxLandcoverVertices: C = 100000 } = {}) {
+  constructor({ maxLandcoverTiles = 16, maxLandcoverVertices = 100000 } = {}) {
     this.ready = BuildingGeometry.init();
     this.landcover = new Map();
     this.landcoverVertices = 0;
-    this.maxLandcoverTiles = A;
-    this.maxLandcoverVertices = C;
+    this.maxLandcoverTiles = maxLandcoverTiles;
+    this.maxLandcoverVertices = maxLandcoverVertices;
   }
-  vegetation(A, C, Q, i, E, s, w) {
-    const t = `${SceneAssembler.VERSION}/${E || `${i}/${C}/${Q}`}`;
-    let y = this.landcover.get(t);
-    const Y = !!y;
-    if (y) {
-      this.landcover.delete(t);
+  vegetation(bytes, tileX, tileY, zoom, sourceKey, sceneBounds, projection) {
+    // 缓存采用瓦片中心投影；删除后重新插入 Map 即更新最近使用顺序。
+    const cacheKey = `${SceneAssembler.VERSION}/${sourceKey || `${zoom}/${tileX}/${tileY}`}`;
+    let cachedTile = this.landcover.get(cacheKey);
+    const cacheHit = !!cachedTile;
+    if (cachedTile) {
+      this.landcover.delete(cacheKey);
     } else {
-      const G = VectorTileDecoder.bounds(C, Q, i);
-      const J = new BuildingGeometry([(G.west + G.east) / 2, (G.south + G.north) / 2]);
-      y = {
-        projection: J,
+      const tileBounds = VectorTileDecoder.bounds(tileX, tileY, zoom);
+      const tileProjection = new BuildingGeometry([
+        (tileBounds.west + tileBounds.east) / 2,
+        (tileBounds.south + tileBounds.north) / 2,
+      ]);
+      cachedTile = {
+        projection: tileProjection,
         records: [],
         vertices: 0,
       };
-      for (const S of VectorTileDecoder.vegetation(A, C, Q, i)) {
-        const U = J.project(S.geometry);
-        for (const j of U) {
-          for (const n of j) {
-            y.vertices += n.length;
+      for (const feature of VectorTileDecoder.vegetation(bytes, tileX, tileY, zoom)) {
+        const polygons = tileProjection.project(feature.geometry);
+        for (const polygon of polygons) {
+          for (const ring of polygon) {
+            cachedTile.vertices += ring.length;
           }
         }
-        y.records.push({
-          feature: S,
-          polygons: U,
+        cachedTile.records.push({
+          feature: feature,
+          polygons: polygons,
         });
       }
-      this.landcoverVertices += y.vertices;
+      this.landcoverVertices += cachedTile.vertices;
     }
+    // 同时限制瓦片数和顶点数，从最早使用的条目开始淘汰。
     for (
-      this.landcover.set(t, y);
+      this.landcover.set(cacheKey, cachedTile);
       this.landcover.size > this.maxLandcoverTiles ||
       this.landcoverVertices > this.maxLandcoverVertices;
     ) {
-      const G = this.landcover.keys().next().value;
-      this.landcoverVertices -= this.landcover.get(G).vertices;
-      this.landcover.delete(G);
+      const oldestKey = this.landcover.keys().next().value;
+      this.landcoverVertices -= this.landcover.get(oldestKey).vertices;
+      this.landcover.delete(oldestKey);
     }
-    const N = w.scale / y.projection.scale;
-    const a = (y.projection.originX - w.originX) * w.scale;
-    const K = (y.projection.originY - w.originY) * w.scale;
-    const e = [];
-    for (const G of y.records) {
-      const J = G.feature.bbox;
-      if (J[2] < s.west || J[0] > s.east || J[3] < s.south || J[1] > s.north) {
+    // 缓存坐标按投影原点和平面缩放转换到当前场景，无需重新解码植被。
+    const scaleRatio = projection.scale / cachedTile.projection.scale;
+    const offsetX = (cachedTile.projection.originX - projection.originX) * projection.scale;
+    const offsetY = (cachedTile.projection.originY - projection.originY) * projection.scale;
+    const features = [];
+    for (const record of cachedTile.records) {
+      const featureBounds = record.feature.bbox;
+      if (
+        featureBounds[2] < sceneBounds.west ||
+        featureBounds[0] > sceneBounds.east ||
+        featureBounds[3] < sceneBounds.south ||
+        featureBounds[1] > sceneBounds.north
+      ) {
         continue;
       }
-      const S = [];
-      for (const U of G.polygons) {
-        const j = [];
-        for (const n of U) {
-          const F = [];
-          for (const q of n) {
-            F.push([q[0] * N + a, q[1] * N + K]);
+      const transformedPolygons = [];
+      for (const polygon of record.polygons) {
+        const transformedRings = [];
+        for (const ring of polygon) {
+          const transformedRing = [];
+          for (const point of ring) {
+            transformedRing.push([
+              point[0] * scaleRatio + offsetX,
+              point[1] * scaleRatio + offsetY,
+            ]);
           }
-          j.push(F);
+          transformedRings.push(transformedRing);
         }
-        S.push(j);
+        transformedPolygons.push(transformedRings);
       }
-      e.push({
-        ...G.feature,
-        projectedPolygons: S,
+      features.push({
+        ...record.feature,
+        projectedPolygons: transformedPolygons,
       });
     }
     return {
-      features: e,
-      hit: Y,
+      features: features,
+      hit: cacheHit,
     };
   }
   async build({
-    x: A,
-    y: C,
-    bytes: Q,
-    greenBytes: i,
-    greenX: E,
-    greenY: s,
-    greenZ: w,
-    greenKey: t,
+    x: tileX,
+    y: tileY,
+    bytes: bytes,
+    greenBytes: greenBytes,
+    greenX: greenX,
+    greenY: greenY,
+    greenZ: greenZ,
+    greenKey: greenKey,
   }) {
-    const y = performance.now();
+    const startedAt = performance.now();
     await this.ready;
-    const Y = performance.now();
-    const N = VectorTileDecoder.decode(Q, A, C);
-    const a = VectorTileDecoder.bounds(A, C);
-    const K = [(a.west + a.east) / 2, (a.south + a.north) / 2];
-    const e = new LandscapeGeometry(K, a);
-    const G = i ? this.vegetation(i, E, s, w, t, a, e.projection) : null;
-    if (G) {
-      N.push(...G.features);
+    const initializedAt = performance.now();
+    const features = VectorTileDecoder.decode(bytes, tileX, tileY);
+    const bounds = VectorTileDecoder.bounds(tileX, tileY);
+    const anchor = [(bounds.west + bounds.east) / 2, (bounds.south + bounds.north) / 2];
+    const landscape = new LandscapeGeometry(anchor, bounds);
+    const vegetation = greenBytes
+      ? this.vegetation(greenBytes, greenX, greenY, greenZ, greenKey, bounds, landscape.projection)
+      : null;
+    if (vegetation) {
+      features.push(...vegetation.features);
     }
-    const J = performance.now();
-    const S = new BuildingGeometry(K).build(N);
-    const U = performance.now();
-    Object.assign(S, e.build(N));
-    S.boats = BoatRoutes.build(N, e);
-    const j = performance.now();
-    S.anchor = K;
-    S.bounds = a;
-    S.source = 'OpenStreetMap · Streets GL · OpenFreeMap';
-    S.geometryVersion = SceneAssembler.VERSION;
-    S.landcoverSource = t || null;
-    const n = TileClipping.clip(S, a);
-    MeshPacking.pack(n);
-    n.timings = {
-      init: Y - y,
-      decode: J - Y,
-      buildings: U - J,
-      landscape: j - U,
-      pack: performance.now() - j,
-      total: performance.now() - y,
-      landcoverCacheHit: G?.hit || false,
+    const decodedAt = performance.now();
+    const scene = new BuildingGeometry(anchor).build(features);
+    const buildingsAt = performance.now();
+    Object.assign(scene, landscape.build(features));
+    scene.boats = BoatRoutes.build(features, landscape);
+    const landscapeAt = performance.now();
+    scene.anchor = anchor;
+    scene.bounds = bounds;
+    scene.source = 'OpenStreetMap · Streets GL · OpenFreeMap';
+    scene.geometryVersion = SceneAssembler.VERSION;
+    scene.landcoverSource = greenKey || null;
+    // 先裁剪到瓦片边界，再按属性去重并生成索引，保证打包包含最终几何。
+    const clippedScene = TileClipping.clip(scene, bounds);
+    MeshPacking.pack(clippedScene);
+    clippedScene.timings = {
+      init: initializedAt - startedAt,
+      decode: decodedAt - initializedAt,
+      buildings: buildingsAt - decodedAt,
+      landscape: landscapeAt - buildingsAt,
+      pack: performance.now() - landscapeAt,
+      total: performance.now() - startedAt,
+      landcoverCacheHit: vegetation?.hit || false,
     };
-    return n;
+    return clippedScene;
   }
 }
 export { SceneAssembler };

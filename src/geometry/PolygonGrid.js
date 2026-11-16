@@ -4,65 +4,75 @@ class PolygonGrid {
     this.size = cellSize;
     this.cells = new Map();
     this.large = [];
-    for (const Q of polygons) {
-      const i = [1 / 0, 1 / 0, -1 / 0, -1 / 0];
-      for (const Y of Q[0]) {
-        i[0] = Math.min(i[0], Y[0]);
-        i[1] = Math.min(i[1], Y[1]);
-        i[2] = Math.max(i[2], Y[0]);
-        i[3] = Math.max(i[3], Y[1]);
+    for (const polygon of polygons) {
+      const bounds = [1 / 0, 1 / 0, -1 / 0, -1 / 0];
+      for (const point of polygon[0]) {
+        bounds[0] = Math.min(bounds[0], point[0]);
+        bounds[1] = Math.min(bounds[1], point[1]);
+        bounds[2] = Math.max(bounds[2], point[0]);
+        bounds[3] = Math.max(bounds[3], point[1]);
       }
-      const E = {
-        polygon: Q,
-        bounds: i,
+      const entry = {
+        polygon: polygon,
+        bounds: bounds,
       };
-      const s = Math.floor(i[0] / cellSize);
-      const w = Math.floor(i[2] / cellSize);
-      const t = Math.floor(i[1] / cellSize);
-      const y = Math.floor(i[3] / cellSize);
-      if ((w - s + 1) * (y - t + 1) > 4096) {
-        this.large.push(E);
+      const minCellX = Math.floor(bounds[0] / cellSize);
+      const maxCellX = Math.floor(bounds[2] / cellSize);
+      const minCellY = Math.floor(bounds[1] / cellSize);
+      const maxCellY = Math.floor(bounds[3] / cellSize);
+      // 超过 4096 格的面单独保存，限制索引体积；查询时仍将其纳入候选。
+      if ((maxCellX - minCellX + 1) * (maxCellY - minCellY + 1) > 4096) {
+        this.large.push(entry);
         continue;
       }
-      for (let Y = s; Y <= w; Y++) {
-        for (let N = t; N <= y; N++) {
-          const a = `${Y}/${N}`;
-          if (!this.cells.has(a)) {
-            this.cells.set(a, []);
+      for (let cellX = minCellX; cellX <= maxCellX; cellX++) {
+        for (let cellY = minCellY; cellY <= maxCellY; cellY++) {
+          const cellKey = `${cellX}/${cellY}`;
+          if (!this.cells.has(cellKey)) {
+            this.cells.set(cellKey, []);
           }
-          this.cells.get(a).push(E);
+          this.cells.get(cellKey).push(entry);
         }
       }
     }
   }
   query(ring) {
-    const C = [1 / 0, 1 / 0, -1 / 0, -1 / 0];
-    for (const E of ring) {
-      C[0] = Math.min(C[0], E[0]);
-      C[1] = Math.min(C[1], E[1]);
-      C[2] = Math.max(C[2], E[0]);
-      C[3] = Math.max(C[3], E[1]);
+    const bounds = [1 / 0, 1 / 0, -1 / 0, -1 / 0];
+    for (const point of ring) {
+      bounds[0] = Math.min(bounds[0], point[0]);
+      bounds[1] = Math.min(bounds[1], point[1]);
+      bounds[2] = Math.max(bounds[2], point[0]);
+      bounds[3] = Math.max(bounds[3], point[1]);
     }
-    const Q = new Set(this.large);
-    const i = [];
-    for (let E = Math.floor(C[0] / this.size); E <= Math.floor(C[2] / this.size); E++) {
-      for (let s = Math.floor(C[1] / this.size); s <= Math.floor(C[3] / this.size); s++) {
-        for (const w of this.cells.get(`${E}/${s}`) || []) {
-          Q.add(w);
+    // 同一多边形可能出现在多个网格，先去重，再以包围盒筛选实际候选。
+    const candidates = new Set(this.large);
+    const polygons = [];
+    for (
+      let cellX = Math.floor(bounds[0] / this.size);
+      cellX <= Math.floor(bounds[2] / this.size);
+      cellX++
+    ) {
+      for (
+        let cellY = Math.floor(bounds[1] / this.size);
+        cellY <= Math.floor(bounds[3] / this.size);
+        cellY++
+      ) {
+        for (const entry of this.cells.get(`${cellX}/${cellY}`) || []) {
+          candidates.add(entry);
         }
       }
     }
-    for (const E of Q) {
+    for (const entry of candidates) {
       if (
-        E.bounds[0] <= C[2] &&
-        E.bounds[2] >= C[0] &&
-        E.bounds[1] <= C[3] &&
-        E.bounds[3] >= C[1]
+        entry.bounds[0] <= bounds[2] &&
+        entry.bounds[2] >= bounds[0] &&
+        entry.bounds[1] <= bounds[3] &&
+        entry.bounds[3] >= bounds[1]
       ) {
-        i.push(E.polygon);
+        polygons.push(entry.polygon);
       }
     }
-    return i;
+    return polygons;
   }
 }
 export { PolygonGrid };

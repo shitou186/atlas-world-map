@@ -1,79 +1,85 @@
 // Reconstructed from the existing Atlas page; see SOURCES.md for provenance.
 class BoatRoutes {
   static build(features, landscape) {
-    const Q = [];
-    const i = new Set();
-    for (const E of features) {
-      const s = E.properties || {};
-      const w = E.geometry;
-      const t = ['ferry', 'boat'].includes(s.route);
-      const y =
-        s.waterway === 'fairway' ||
-        (['river', 'canal'].includes(s.waterway) &&
-          ['yes', 'designated', 'permissive'].includes(s.boat));
+    // 仅采用允许通航的水路线；坐标去重后累计弧长，供船只按距离匀速采样。
+    const routes = [];
+    const seenCoordinates = new Set();
+    for (const feature of features) {
+      const tags = feature.properties || {};
+      const geometry = feature.geometry;
+      const isFerry = ['ferry', 'boat'].includes(tags.route);
+      const isNavigableWaterway =
+        tags.waterway === 'fairway' ||
+        (['river', 'canal'].includes(tags.waterway) &&
+          ['yes', 'designated', 'permissive'].includes(tags.boat));
       if (
-        (!t && !y) ||
-        ['no', 'private'].includes(s.boat ?? s.access) ||
-        s.tunnel === 'yes' ||
-        s.tunnel === true ||
-        !['LineString', 'MultiLineString'].includes(w?.type)
+        (!isFerry && !isNavigableWaterway) ||
+        ['no', 'private'].includes(tags.boat ?? tags.access) ||
+        tags.tunnel === 'yes' ||
+        tags.tunnel === true ||
+        !['LineString', 'MultiLineString'].includes(geometry?.type)
       ) {
         continue;
       }
-      const Y = s.width;
-      if (Number.isFinite(Y) && Y < 12) {
+      const width = tags.width;
+      if (Number.isFinite(width) && width < 12) {
         continue;
       }
-      const N = w.type === 'LineString' ? [w.coordinates] : w.coordinates;
-      for (let a = 0; a < N.length; a++) {
-        const K = N[a];
-        const e = [];
-        const G = [0];
-        const J = [1 / 0, 1 / 0, -1 / 0, -1 / 0];
-        const S = JSON.stringify(K);
-        if (i.has(S)) {
+      const lineStrings =
+        geometry.type === 'LineString' ? [geometry.coordinates] : geometry.coordinates;
+      for (let lineIndex = 0; lineIndex < lineStrings.length; lineIndex++) {
+        const coordinates = lineStrings[lineIndex];
+        const points = [];
+        const distances = [0];
+        const bounds = [1 / 0, 1 / 0, -1 / 0, -1 / 0];
+        const coordinateKey = JSON.stringify(coordinates);
+        if (seenCoordinates.has(coordinateKey)) {
           continue;
         }
-        i.add(S);
-        for (const n of K) {
-          const F = landscape.point(n);
-          if (e.length) {
-            const q = e.at(-1);
-            const u = Math.hypot(F[0] - q[0], F[1] - q[1]);
-            if (u < 0.001) {
+        seenCoordinates.add(coordinateKey);
+        for (const coordinate of coordinates) {
+          const projectedPoint = landscape.point(coordinate);
+          if (points.length) {
+            const previousPoint = points.at(-1);
+            const segmentLength = Math.hypot(
+              projectedPoint[0] - previousPoint[0],
+              projectedPoint[1] - previousPoint[1],
+            );
+            if (segmentLength < 0.001) {
               continue;
             }
-            G.push(G.at(-1) + u);
+            distances.push(distances.at(-1) + segmentLength);
           }
-          e.push([F[0], F[1], 0.03]);
-          J[0] = Math.min(J[0], F[0]);
-          J[1] = Math.min(J[1], F[1]);
-          J[2] = Math.max(J[2], F[0]);
-          J[3] = Math.max(J[3], F[1]);
+          points.push([projectedPoint[0], projectedPoint[1], 0.03]);
+          bounds[0] = Math.min(bounds[0], projectedPoint[0]);
+          bounds[1] = Math.min(bounds[1], projectedPoint[1]);
+          bounds[2] = Math.max(bounds[2], projectedPoint[0]);
+          bounds[3] = Math.max(bounds[3], projectedPoint[1]);
         }
-        const U = G.at(-1);
-        if (U < 250) {
+        const routeLength = distances.at(-1);
+        if (routeLength < 250) {
           continue;
         }
-        let j = 0;
-        for (const n of E.id) {
-          j = (Math.imul(j, 31) + n.charCodeAt(0)) | 0;
+        // 使用要素 ID 生成稳定种子，瓦片重新加载后仍保持船只分布。
+        let seed = 0;
+        for (const idCharacter of feature.id) {
+          seed = (Math.imul(seed, 31) + idCharacter.charCodeAt(0)) | 0;
         }
-        Q.push({
-          id: `${E.id}/${a}/${K[0].join(',')}/${K.at(-1).join(',')}`,
-          sourceId: E.id,
-          points: new Float32Array(e.flat()),
-          distances: new Float32Array(G),
-          bounds: J,
-          length: U,
-          seed: j >>> 0,
+        routes.push({
+          id: `${feature.id}/${lineIndex}/${coordinates[0].join(',')}/${coordinates.at(-1).join(',')}`,
+          sourceId: feature.id,
+          points: new Float32Array(points.flat()),
+          distances: new Float32Array(distances),
+          bounds: bounds,
+          length: routeLength,
+          seed: seed >>> 0,
           speed: 25 / 3,
-          count: Math.min(32, Math.max(1, Math.floor(U / 1000))),
-          ferry: t,
+          count: Math.min(32, Math.max(1, Math.floor(routeLength / 1000))),
+          ferry: isFerry,
         });
       }
     }
-    return Q;
+    return routes;
   }
 }
 export { BoatRoutes };

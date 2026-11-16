@@ -1,135 +1,153 @@
 // Reconstructed from the existing Atlas page; see SOURCES.md for provenance.
 class RailwayRoutes {
   static build(railways) {
-    const o = new Map();
-    const p = [];
-    const x = new Set();
-    for (const l of railways) {
-      if (!['rail', 'light_rail', 'tram', 'subway', 'narrow_gauge'].includes(l.type)) {
+    // 按轨道类型、轨距和量化坐标连接节点，并去除重复边。
+    const nodes = new Map();
+    const edges = [];
+    const seenEdges = new Set();
+    for (const railway of railways) {
+      if (!['rail', 'light_rail', 'tram', 'subway', 'narrow_gauge'].includes(railway.type)) {
         continue;
       }
-      let D = null;
-      for (let F = 0; F < l.points.length; F += 3) {
-        const U = l.points[F];
-        const j = l.points[F + 1];
-        const q = l.points[F + 2];
-        const N = `${l.type}/${l.gauge}/${Math.round(U * 20)}/${Math.round(j * 20)}/${Math.round(q * 100)}`;
-        if (!o.has(N)) {
-          o.set(N, {
-            key: N,
-            x: U,
-            y: j,
-            z: q,
+      let previousNode = null;
+      for (let pointOffset = 0; pointOffset < railway.points.length; pointOffset += 3) {
+        const pointX = railway.points[pointOffset];
+        const pointY = railway.points[pointOffset + 1];
+        const pointZ = railway.points[pointOffset + 2];
+        const nodeKey = `${railway.type}/${railway.gauge}/${Math.round(pointX * 20)}/${Math.round(pointY * 20)}/${Math.round(pointZ * 100)}`;
+        if (!nodes.has(nodeKey)) {
+          nodes.set(nodeKey, {
+            key: nodeKey,
+            x: pointX,
+            y: pointY,
+            z: pointZ,
             edges: [],
           });
         }
-        const J = o.get(N);
-        if (D && D !== J) {
-          const se = D.key < N ? D.key + ':' + N : N + ':' + D.key;
-          if (!x.has(se)) {
-            const Z = {
-              key: se,
-              a: D.key < N ? D : J,
-              b: D.key < N ? J : D,
-              type: l.type,
-              gauge: l.gauge,
+        const node = nodes.get(nodeKey);
+        if (previousNode && previousNode !== node) {
+          const edgeKey =
+            previousNode.key < nodeKey
+              ? previousNode.key + ':' + nodeKey
+              : nodeKey + ':' + previousNode.key;
+          if (!seenEdges.has(edgeKey)) {
+            const edge = {
+              key: edgeKey,
+              a: previousNode.key < nodeKey ? previousNode : node,
+              b: previousNode.key < nodeKey ? node : previousNode,
+              type: railway.type,
+              gauge: railway.gauge,
               used: false,
             };
-            p.push(Z);
-            D.edges.push(Z);
-            J.edges.push(Z);
-            x.add(se);
+            edges.push(edge);
+            previousNode.edges.push(edge);
+            node.edges.push(edge);
+            seenEdges.add(edgeKey);
           }
         }
-        D = J;
+        previousNode = node;
       }
     }
-    p.sort((l, D) => l.key.localeCompare(D.key));
-    const T = [];
-    const w = p.filter((l) => l.a.edges.length !== 2 || l.b.edges.length !== 2);
-    for (const l of [...w, ...p]) {
-      if (l.used) {
+    edges.sort((firstEdge, secondEdge) => firstEdge.key.localeCompare(secondEdge.key));
+    const routes = [];
+    // 从分岔或端点优先串联路线，再处理闭环；每条边只遍历一次。
+    const boundaryEdges = edges.filter(
+      (edge) => edge.a.edges.length !== 2 || edge.b.edges.length !== 2,
+    );
+    for (const initialEdge of [...boundaryEdges, ...edges]) {
+      if (initialEdge.used) {
         continue;
       }
-      let D = l;
-      let F = l.a.edges.length !== 2 ? l.a : l.b;
-      const U = [F.x, F.y, F.z];
-      const j = [0];
-      const q = [F.x, F.y, F.x, F.y];
-      const N = F;
-      for (; D && !D.used;) {
-        D.used = true;
-        const Z = D.a === F ? D.b : D.a;
+      let currentEdge = initialEdge;
+      let currentNode = initialEdge.a.edges.length !== 2 ? initialEdge.a : initialEdge.b;
+      const points = [currentNode.x, currentNode.y, currentNode.z];
+      const distances = [0];
+      const bounds = [currentNode.x, currentNode.y, currentNode.x, currentNode.y];
+      const startNode = currentNode;
+      for (; currentEdge && !currentEdge.used;) {
+        currentEdge.used = true;
+        const nextNode = currentEdge.a === currentNode ? currentEdge.b : currentEdge.a;
         if (
-          (j.push(j.at(-1) + Math.hypot(Z.x - F.x, Z.y - F.y, Z.z - F.z)),
-          U.push(Z.x, Z.y, Z.z),
-          (q[0] = Math.min(q[0], Z.x)),
-          (q[1] = Math.min(q[1], Z.y)),
-          (q[2] = Math.max(q[2], Z.x)),
-          (q[3] = Math.max(q[3], Z.y)),
-          (F = Z),
-          F === N || F.edges.length !== 2)
+          (distances.push(
+            distances.at(-1) +
+              Math.hypot(
+                nextNode.x - currentNode.x,
+                nextNode.y - currentNode.y,
+                nextNode.z - currentNode.z,
+              ),
+          ),
+          points.push(nextNode.x, nextNode.y, nextNode.z),
+          (bounds[0] = Math.min(bounds[0], nextNode.x)),
+          (bounds[1] = Math.min(bounds[1], nextNode.y)),
+          (bounds[2] = Math.max(bounds[2], nextNode.x)),
+          (bounds[3] = Math.max(bounds[3], nextNode.y)),
+          (currentNode = nextNode),
+          currentNode === startNode || currentNode.edges.length !== 2)
         ) {
           break;
         }
-        D = F.edges[0].used ? F.edges[1] : F.edges[0];
+        currentEdge = currentNode.edges[0].used ? currentNode.edges[1] : currentNode.edges[0];
       }
-      const J = j.at(-1);
-      if (J < 70) {
+      const routeLength = distances.at(-1);
+      if (routeLength < 70) {
         continue;
       }
-      let se = 0;
-      for (const Z of N.key) {
-        se = (Math.imul(se, 31) + Z.charCodeAt(0)) | 0;
+      let seed = 0;
+      for (const keyCharacter of startNode.key) {
+        seed = (Math.imul(seed, 31) + keyCharacter.charCodeAt(0)) | 0;
       }
-      T.push({
-        id: N.key,
-        type: l.type,
-        points: new Float32Array(U),
-        distances: new Float32Array(j),
-        bounds: q,
-        length: J,
-        loop: F === N,
-        speed: l.type === 'tram' ? 7 : 13,
-        seed: se >>> 0,
-        gauge: l.gauge,
-        cars: Math.min(4, Math.floor(J / 35)),
+      routes.push({
+        id: startNode.key,
+        type: initialEdge.type,
+        points: new Float32Array(points),
+        distances: new Float32Array(distances),
+        bounds: bounds,
+        length: routeLength,
+        loop: currentNode === startNode,
+        speed: initialEdge.type === 'tram' ? 7 : 13,
+        seed: seed >>> 0,
+        gauge: initialEdge.gauge,
+        cars: Math.min(4, Math.floor(routeLength / 35)),
       });
     }
-    return T;
+    return routes;
   }
   static project(route, point) {
-    let p = null;
-    for (let x = 3; x < route.points.length; x += 3) {
-      const T = route.points;
-      const w = x - 3;
-      const l = T[x] - T[w];
-      const D = T[x + 1] - T[w + 1];
-      const F = T[x + 2] - T[w + 2];
-      const U = l * l + D * D + F * F;
-      if (!U) {
+    // 将旧列车位置投影到各线段，供路线刷新时选择误差最小的连续位置。
+    let closestProjection = null;
+    for (let pointOffset = 3; pointOffset < route.points.length; pointOffset += 3) {
+      const points = route.points;
+      const previousOffset = pointOffset - 3;
+      const deltaX = points[pointOffset] - points[previousOffset];
+      const deltaY = points[pointOffset + 1] - points[previousOffset + 1];
+      const deltaZ = points[pointOffset + 2] - points[previousOffset + 2];
+      const lengthSquared = deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
+      if (!lengthSquared) {
         continue;
       }
-      const j = Math.max(
+      const fraction = Math.max(
         0,
         Math.min(
           1,
-          ((point[0] - T[w]) * l + (point[1] - T[w + 1]) * D + (point[2] - T[w + 2]) * F) / U,
+          ((point[0] - points[previousOffset]) * deltaX +
+            (point[1] - points[previousOffset + 1]) * deltaY +
+            (point[2] - points[previousOffset + 2]) * deltaZ) /
+            lengthSquared,
         ),
       );
-      const q =
-        (point[0] - T[w] - l * j) ** 2 +
-        (point[1] - T[w + 1] - D * j) ** 2 +
-        (point[2] - T[w + 2] - F * j) ** 2;
-      if (!p || q < p.error) {
-        p = {
-          error: q,
-          distance: route.distances[w / 3] + Math.sqrt(U) * j,
-          angle: Math.atan2(D, l),
+      const errorSquared =
+        (point[0] - points[previousOffset] - deltaX * fraction) ** 2 +
+        (point[1] - points[previousOffset + 1] - deltaY * fraction) ** 2 +
+        (point[2] - points[previousOffset + 2] - deltaZ * fraction) ** 2;
+      if (!closestProjection || errorSquared < closestProjection.error) {
+        closestProjection = {
+          error: errorSquared,
+          distance: route.distances[previousOffset / 3] + Math.sqrt(lengthSquared) * fraction,
+          angle: Math.atan2(deltaY, deltaX),
         };
       }
     }
-    return p;
+    return closestProjection;
   }
 }
 export { RailwayRoutes };

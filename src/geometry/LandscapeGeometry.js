@@ -34,283 +34,367 @@ class LandscapeGeometry {
     this.topology = new SurfaceTopology(TileClipping.rectangle(anchor, bounds), this);
   }
   point(coordinate) {
-    let C = coordinate[0];
-    for (; C - this.anchor[0] > 180;) {
-      C -= 360;
+    // 与建筑共用锚点、经度回绕和米制缩放，保证道路、植被及模型处于同一坐标系。
+    let longitude = coordinate[0];
+    for (; longitude - this.anchor[0] > 180;) {
+      longitude -= 360;
     }
-    for (; C - this.anchor[0] < -180;) {
-      C += 360;
+    for (; longitude - this.anchor[0] < -180;) {
+      longitude += 360;
     }
     return [
-      (((C * Math.PI) / 180) * 6378137 - this.projection.originX) * this.projection.scale,
+      (((longitude * Math.PI) / 180) * 6378137 - this.projection.originX) * this.projection.scale,
       (Math.log(Math.tan(Math.PI / 4 + (coordinate[1] * Math.PI) / 360)) * 6378137 -
         this.projection.originY) *
         this.projection.scale,
     ];
   }
-  random(A) {
-    let C = Math.imul(A ^ 2654435769, 2246822507);
-    C = Math.imul(C ^ (C >>> 13), 3266489909);
-    return ((C ^ (C >>> 16)) >>> 0) / 4294967296;
+  random(seed) {
+    // 基于稳定标识生成可重复随机数，切换瓦片或重新加载时树形、朝向不会跳变。
+    let mixedSeed = Math.imul(seed ^ 2654435769, 2246822507);
+    mixedSeed = Math.imul(mixedSeed ^ (mixedSeed >>> 13), 3266489909);
+    return ((mixedSeed ^ (mixedSeed >>> 16)) >>> 0) / 4294967296;
   }
-  combine(A, C = null, Q = ClipperLib.ClipType.ctDifference, i = 1000) {
-    const E = new ClipperLib.Clipper();
-    for (const [t, y] of [
-      [A, ClipperLib.PolyType.ptSubject],
-      [C, ClipperLib.PolyType.ptClip],
+  combine(
+    subjectPolygons,
+    clipPolygons = null,
+    operation = ClipperLib.ClipType.ctDifference,
+    integerScale = 1000,
+  ) {
+    // Clipper 使用整数坐标；放大到毫米量级后计算布尔运算，再恢复闭环米制坐标。
+    const clipper = new ClipperLib.Clipper();
+    for (const [polygonSet, polygonType] of [
+      [subjectPolygons, ClipperLib.PolyType.ptSubject],
+      [clipPolygons, ClipperLib.PolyType.ptClip],
     ]) {
-      if (t) {
-        for (const Y of t) {
-          for (let N = 0; N < Y.length; N++) {
-            const a = Y[N].map((K) => ({
-              X: Math.round(K[0] * i),
-              Y: Math.round(K[1] * i),
+      if (polygonSet) {
+        for (const polygon of polygonSet) {
+          for (let ringIndex = 0; ringIndex < polygon.length; ringIndex++) {
+            const integerRing = polygon[ringIndex].map((point) => ({
+              X: Math.round(point[0] * integerScale),
+              Y: Math.round(point[1] * integerScale),
             }));
-            if (ClipperLib.Clipper.Orientation(a) !== (N === 0)) {
-              a.reverse();
+            if (ClipperLib.Clipper.Orientation(integerRing) !== (ringIndex === 0)) {
+              integerRing.reverse();
             }
-            E.AddPath(a, y, true);
+            clipper.AddPath(integerRing, polygonType, true);
           }
         }
       }
     }
-    const s = new ClipperLib.PolyTree();
-    E.Execute(
-      C ? Q : ClipperLib.ClipType.ctUnion,
-      s,
+    const polygonTree = new ClipperLib.PolyTree();
+    clipper.Execute(
+      clipPolygons ? operation : ClipperLib.ClipType.ctUnion,
+      polygonTree,
       ClipperLib.PolyFillType.pftNonZero,
       ClipperLib.PolyFillType.pftNonZero,
     );
-    const w = [];
-    for (const t of ClipperLib.JS.PolyTreeToExPolygons(s)) {
-      const y = [];
-      for (const Y of [t.outer, ...t.holes]) {
-        const N = Y.map((a) => [a.X / i, a.Y / i]);
-        N.push(N[0]);
-        y.push(N);
+    const resultPolygons = [];
+    for (const clippedPolygon of ClipperLib.JS.PolyTreeToExPolygons(polygonTree)) {
+      const resultRings = [];
+      for (const integerRing of [clippedPolygon.outer, ...clippedPolygon.holes]) {
+        const resultRing = integerRing.map((point) => [
+          point.X / integerScale,
+          point.Y / integerScale,
+        ]);
+        resultRing.push(resultRing[0]);
+        resultRings.push(resultRing);
       }
-      w.push(y);
+      resultPolygons.push(resultRings);
     }
-    return w;
+    return resultPolygons;
   }
-  ribbon(A, C) {
-    const Q = [];
-    const i = [];
-    for (let s = 0; s < A.length; s++) {
-      const w = A[s];
-      const t = A[Math.max(0, s - 1)];
-      const y = A[Math.min(A.length - 1, s + 1)];
-      const Y = Math.hypot(w[0] - t[0], w[1] - t[1]);
-      const N = Math.hypot(y[0] - w[0], y[1] - w[1]);
-      const a = Y ? -(w[1] - t[1]) / Y : -(y[1] - w[1]) / N;
-      const K = Y ? (w[0] - t[0]) / Y : (y[0] - w[0]) / N;
-      const e = N ? -(y[1] - w[1]) / N : a;
-      const G = N ? (y[0] - w[0]) / N : K;
-      const J = Math.max(0.25, 1 + a * e + K * G);
-      const S = (((a + e) / J) * C) / 2;
-      const U = (((K + G) / J) * C) / 2;
-      Q.push([w[0] + S, w[1] + U]);
-      i.push([w[0] - S, w[1] - U]);
+  ribbon(centerline, width) {
+    // 相邻线段的法线合成斜接偏移，并限制分母，避免急弯把道路边缘无限拉长。
+    const leftEdge = [];
+    const rightEdge = [];
+    for (let vertexIndex = 0; vertexIndex < centerline.length; vertexIndex++) {
+      const currentPoint = centerline[vertexIndex];
+      const previousPoint = centerline[Math.max(0, vertexIndex - 1)];
+      const nextPoint = centerline[Math.min(centerline.length - 1, vertexIndex + 1)];
+      const incomingLength = Math.hypot(
+        currentPoint[0] - previousPoint[0],
+        currentPoint[1] - previousPoint[1],
+      );
+      const outgoingLength = Math.hypot(
+        nextPoint[0] - currentPoint[0],
+        nextPoint[1] - currentPoint[1],
+      );
+      const incomingNormalX = incomingLength
+        ? -(currentPoint[1] - previousPoint[1]) / incomingLength
+        : -(nextPoint[1] - currentPoint[1]) / outgoingLength;
+      const incomingNormalY = incomingLength
+        ? (currentPoint[0] - previousPoint[0]) / incomingLength
+        : (nextPoint[0] - currentPoint[0]) / outgoingLength;
+      const outgoingNormalX = outgoingLength
+        ? -(nextPoint[1] - currentPoint[1]) / outgoingLength
+        : incomingNormalX;
+      const outgoingNormalY = outgoingLength
+        ? (nextPoint[0] - currentPoint[0]) / outgoingLength
+        : incomingNormalY;
+      const miterDenominator = Math.max(
+        0.25,
+        1 + incomingNormalX * outgoingNormalX + incomingNormalY * outgoingNormalY,
+      );
+      const offsetX = (((incomingNormalX + outgoingNormalX) / miterDenominator) * width) / 2;
+      const offsetY = (((incomingNormalY + outgoingNormalY) / miterDenominator) * width) / 2;
+      leftEdge.push([currentPoint[0] + offsetX, currentPoint[1] + offsetY]);
+      rightEdge.push([currentPoint[0] - offsetX, currentPoint[1] - offsetY]);
     }
-    const E = [...Q, ...i.reverse()];
-    E.push(E[0]);
-    return [E];
+    const ribbonRing = [...leftEdge, ...rightEdge.reverse()];
+    ribbonRing.push(ribbonRing[0]);
+    return [ribbonRing];
   }
-  surface(A, C, Q, i, E = 0) {
-    if (C === 'markings' || C === 'crossings') {
-      this.markings[C === 'crossings' ? 'crossings' : 'polygons'].push(...A);
+  surface(polygons, surfaceKind, elevation, color, sideDepth = 0) {
+    // 顶面按孔洞三角化；需要路缘厚度时补侧壁，标线则延后交给地表拓扑统一裁剪。
+    if (surfaceKind === 'markings' || surfaceKind === 'crossings') {
+      this.markings[surfaceKind === 'crossings' ? 'crossings' : 'polygons'].push(...polygons);
       return;
     }
-    const s = (this.buffers[C] ||= {
+    const surfaceBuffer = (this.buffers[surfaceKind] ||= {
       positions: [],
       colors: [],
     });
-    const w = new Color(i).toArray();
-    for (const t of A) {
-      const y = flatten(t);
-      const Y = earcut(y.vertices, y.holes, 2);
-      for (const N of Y) {
-        s.positions.push(y.vertices[N * 2], y.vertices[N * 2 + 1], Q);
-        s.colors.push(...w);
+    const linearColor = new Color(color).toArray();
+    for (const polygon of polygons) {
+      const flattenedPolygon = flatten(polygon);
+      const triangleIndices = earcut(flattenedPolygon.vertices, flattenedPolygon.holes, 2);
+      for (const vertexIndex of triangleIndices) {
+        surfaceBuffer.positions.push(
+          flattenedPolygon.vertices[vertexIndex * 2],
+          flattenedPolygon.vertices[vertexIndex * 2 + 1],
+          elevation,
+        );
+        surfaceBuffer.colors.push(...linearColor);
       }
-      if (E) {
-        for (const N of t) {
-          for (let a = 1; a < N.length; a++) {
-            const K = N[a - 1];
-            const e = N[a];
-            s.positions.push(...K, Q, ...e, Q, ...e, Q - E, ...K, Q, ...e, Q - E, ...K, Q - E);
-            for (let G = 0; G < 6; G++) {
-              s.colors.push(w[0] * 0.83, w[1] * 0.83, w[2] * 0.83);
+      if (sideDepth) {
+        for (const ring of polygon) {
+          for (let edgeIndex = 1; edgeIndex < ring.length; edgeIndex++) {
+            const edgeStart = ring[edgeIndex - 1];
+            const edgeEnd = ring[edgeIndex];
+            surfaceBuffer.positions.push(
+              ...edgeStart,
+              elevation,
+              ...edgeEnd,
+              elevation,
+              ...edgeEnd,
+              elevation - sideDepth,
+              ...edgeStart,
+              elevation,
+              ...edgeEnd,
+              elevation - sideDepth,
+              ...edgeStart,
+              elevation - sideDepth,
+            );
+            for (let cornerIndex = 0; cornerIndex < 6; cornerIndex++) {
+              surfaceBuffer.colors.push(
+                linearColor[0] * 0.83,
+                linearColor[1] * 0.83,
+                linearColor[2] * 0.83,
+              );
             }
           }
         }
       }
     }
   }
-  contains(A, C) {
-    let Q = false;
-    for (const i of C) {
-      for (let E = 0, s = i.length - 1; E < i.length; s = E++) {
-        const w = i[E];
-        const t = i[s];
+  contains(point, polygon) {
+    // 奇偶射线法同时遍历外环和孔洞；落入洞内会抵消一次穿越，结果视为不在面内。
+    let inside = false;
+    for (const ring of polygon) {
+      for (
+        let currentIndex = 0, previousIndex = ring.length - 1;
+        currentIndex < ring.length;
+        previousIndex = currentIndex++
+      ) {
+        const currentPoint = ring[currentIndex];
+        const previousPoint = ring[previousIndex];
         if (
-          w[1] > A[1] != t[1] > A[1] &&
-          A[0] < ((t[0] - w[0]) * (A[1] - w[1])) / (t[1] - w[1]) + w[0]
+          currentPoint[1] > point[1] != previousPoint[1] > point[1] &&
+          point[0] <
+            ((previousPoint[0] - currentPoint[0]) * (point[1] - currentPoint[1])) /
+              (previousPoint[1] - currentPoint[1]) +
+              currentPoint[0]
         ) {
-          Q = !Q;
+          inside = !inside;
         }
       }
     }
-    return Q;
+    return inside;
   }
-  block(A) {
-    const C = [1 / 0, 1 / 0, -1 / 0, -1 / 0];
-    for (const E of A[0]) {
-      C[0] = Math.min(C[0], E[0]);
-      C[1] = Math.min(C[1], E[1]);
-      C[2] = Math.max(C[2], E[0]);
-      C[3] = Math.max(C[3], E[1]);
+  block(polygon) {
+    // 只登记与当前瓦片相交的 40 米网格，用于快速排除建筑、道路和水域内的生成树。
+    const polygonBounds = [1 / 0, 1 / 0, -1 / 0, -1 / 0];
+    for (const vertex of polygon[0]) {
+      polygonBounds[0] = Math.min(polygonBounds[0], vertex[0]);
+      polygonBounds[1] = Math.min(polygonBounds[1], vertex[1]);
+      polygonBounds[2] = Math.max(polygonBounds[2], vertex[0]);
+      polygonBounds[3] = Math.max(polygonBounds[3], vertex[1]);
     }
-    const Q = this.point([this.bounds.west, this.bounds.south]);
-    const i = this.point([this.bounds.east, this.bounds.north]);
+    const tileMinimum = this.point([this.bounds.west, this.bounds.south]);
+    const tileMaximum = this.point([this.bounds.east, this.bounds.north]);
     for (
-      let E = Math.floor(Math.max(Q[0], C[0]) / 40);
-      E <= Math.floor(Math.min(i[0], C[2]) / 40);
-      E++
+      let cellX = Math.floor(Math.max(tileMinimum[0], polygonBounds[0]) / 40);
+      cellX <= Math.floor(Math.min(tileMaximum[0], polygonBounds[2]) / 40);
+      cellX++
     ) {
       for (
-        let s = Math.floor(Math.max(Q[1], C[1]) / 40);
-        s <= Math.floor(Math.min(i[1], C[3]) / 40);
-        s++
+        let cellY = Math.floor(Math.max(tileMinimum[1], polygonBounds[1]) / 40);
+        cellY <= Math.floor(Math.min(tileMaximum[1], polygonBounds[3]) / 40);
+        cellY++
       ) {
-        const w = `${E}/${s}`;
-        if (!this.blockers.has(w)) {
-          this.blockers.set(w, []);
+        const cellKey = `${cellX}/${cellY}`;
+        if (!this.blockers.has(cellKey)) {
+          this.blockers.set(cellKey, []);
         }
-        this.blockers.get(w).push(A);
+        this.blockers.get(cellKey).push(polygon);
       }
     }
   }
-  tree(A, C, Q, i) {
-    const E = this.point([this.bounds.west, this.bounds.south]);
-    const s = this.point([this.bounds.east, this.bounds.north]);
-    if (A[0] < E[0] || A[0] > s[0] || A[1] < E[1] || A[1] > s[1]) {
+  tree(position, tags, treeId, sourceType) {
+    // OSM 明确标注的树节点优先保留；自动树需避开阻挡面，并与邻近树保持四米间距。
+    const tileMinimum = this.point([this.bounds.west, this.bounds.south]);
+    const tileMaximum = this.point([this.bounds.east, this.bounds.north]);
+    if (
+      position[0] < tileMinimum[0] ||
+      position[0] > tileMaximum[0] ||
+      position[1] < tileMinimum[1] ||
+      position[1] > tileMaximum[1]
+    ) {
       return;
     }
-    const w = Math.floor(A[0] / 4);
-    const t = Math.floor(A[1] / 4);
-    if (i !== 'node') {
-      for (const J of this.blockers.get(`${Math.floor(A[0] / 40)}/${Math.floor(A[1] / 40)}`) ||
-        []) {
-        if (this.contains(A, J)) {
+    const cellX = Math.floor(position[0] / 4);
+    const cellY = Math.floor(position[1] / 4);
+    if (sourceType !== 'node') {
+      for (const blockingPolygon of this.blockers.get(
+        `${Math.floor(position[0] / 40)}/${Math.floor(position[1] / 40)}`,
+      ) || []) {
+        if (this.contains(position, blockingPolygon)) {
           return;
         }
       }
-      for (let J = w - 1; J <= w + 1; J++) {
-        for (let S = t - 1; S <= t + 1; S++) {
-          for (const U of this.treeCells.get(`${J}/${S}`) || []) {
-            if (Math.hypot(U[0] - A[0], U[1] - A[1]) < 4) {
+      for (let neighborX = cellX - 1; neighborX <= cellX + 1; neighborX++) {
+        for (let neighborY = cellY - 1; neighborY <= cellY + 1; neighborY++) {
+          for (const existingTree of this.treeCells.get(`${neighborX}/${neighborY}`) || []) {
+            if (Math.hypot(existingTree[0] - position[0], existingTree[1] - position[1]) < 4) {
               return;
             }
           }
         }
       }
     }
-    let y = 0;
-    for (const J of Q) {
-      y = (Math.imul(y, 31) + J.charCodeAt(0)) | 0;
+    let treeSeed = 0;
+    for (const character of treeId) {
+      treeSeed = (Math.imul(treeSeed, 31) + character.charCodeAt(0)) | 0;
     }
-    const Y = [C.height, C.diameter_crown];
-    for (let J = 0; J < Y.length; J++) {
-      if (typeof Y[J] == 'string') {
-        const S = /^\s*(\d+(?:\.\d+)?)\s*(m|ft)?\s*$/.exec(Y[J]);
-        Y[J] = S ? Number(S[1]) * (S[2] === 'ft' ? 0.3048 : 1) : void 0;
+    const taggedDimensions = [tags.height, tags.diameter_crown];
+    for (let dimensionIndex = 0; dimensionIndex < taggedDimensions.length; dimensionIndex++) {
+      if (typeof taggedDimensions[dimensionIndex] == 'string') {
+        const dimensionMatch = /^\s*(\d+(?:\.\d+)?)\s*(m|ft)?\s*$/.exec(
+          taggedDimensions[dimensionIndex],
+        );
+        taggedDimensions[dimensionIndex] = dimensionMatch
+          ? Number(dimensionMatch[1]) * (dimensionMatch[2] === 'ft' ? 0.3048 : 1)
+          : void 0;
       }
     }
-    const [N, a] = Y;
-    const K =
-      C.leaf_type === 'needleleaved' || /Pinus|Picea|Abies|松|杉/.test(C.genus || C.species || '');
-    const e = Number.isFinite(N) && N > 0 ? N : 8 + this.random(y) * 7;
+    const [taggedHeight, taggedCrown] = taggedDimensions;
+    const isConifer =
+      tags.leaf_type === 'needleleaved' ||
+      /Pinus|Picea|Abies|松|杉/.test(tags.genus || tags.species || '');
+    const treeHeight =
+      Number.isFinite(taggedHeight) && taggedHeight > 0
+        ? taggedHeight
+        : 8 + this.random(treeSeed) * 7;
     this.trees.push({
-      id: Q,
-      x: A[0],
-      y: A[1],
-      height: e,
-      crown: Number.isFinite(a) && a > 0 ? a : e * (K ? 0.46 : 0.62),
-      variant: K ? 3 : Math.floor(this.random(y + 1) * 3),
-      angle: this.random(y + 2) * Math.PI * 2,
-      source: i,
-      inferredHeight: !(Number.isFinite(N) && N > 0),
-      inferredCrown: !(Number.isFinite(a) && a > 0),
+      id: treeId,
+      x: position[0],
+      y: position[1],
+      height: treeHeight,
+      crown:
+        Number.isFinite(taggedCrown) && taggedCrown > 0
+          ? taggedCrown
+          : treeHeight * (isConifer ? 0.46 : 0.62),
+      variant: isConifer ? 3 : Math.floor(this.random(treeSeed + 1) * 3),
+      angle: this.random(treeSeed + 2) * Math.PI * 2,
+      source: sourceType,
+      inferredHeight: !(Number.isFinite(taggedHeight) && taggedHeight > 0),
+      inferredCrown: !(Number.isFinite(taggedCrown) && taggedCrown > 0),
     });
-    const G = `${w}/${t}`;
-    if (!this.treeCells.has(G)) {
-      this.treeCells.set(G, []);
+    const cellKey = `${cellX}/${cellY}`;
+    if (!this.treeCells.has(cellKey)) {
+      this.treeCells.set(cellKey, []);
     }
-    this.treeCells.get(G).push(A);
-    this.stats[i === 'node' ? 'mappedTrees' : 'generatedTrees']++;
+    this.treeCells.get(cellKey).push(position);
+    this.stats[sourceType === 'node' ? 'mappedTrees' : 'generatedTrees']++;
   }
   build(features) {
-    const C = new Map();
-    const Q = [];
-    const i = [];
-    const E = [];
-    const s = [];
-    for (const n of features) {
-      const F = n.properties;
-      const q = n.geometry;
-      if (q.type === 'Point') {
-        if (F.highway === 'street_lamp') {
-          const gA = this.point(q.coordinates);
-          const EA = F.height;
-          const iA = F.direction;
+    // 先收集原始点线面与阻挡区，再生成道路/路缘、设施、标线、植被，最后统一地表拓扑。
+    const roadsByMaterial = new Map();
+    const vegetationAreas = [];
+    const treeRows = [];
+    const crossingNodes = [];
+    const crossingWays = [];
+    for (const sourceFeature of features) {
+      const tags = sourceFeature.properties;
+      const geometry = sourceFeature.geometry;
+      if (geometry.type === 'Point') {
+        if (tags.highway === 'street_lamp') {
+          const lampPosition = this.point(geometry.coordinates);
+          const taggedHeight = tags.height;
+          const taggedDirection = tags.direction;
           this.lamps.push({
-            id: n.id,
-            x: gA[0],
-            y: gA[1],
+            id: sourceFeature.id,
+            x: lampPosition[0],
+            y: lampPosition[1],
             z: 0.08,
-            height: EA > 0 ? EA : 8,
-            angle: Number.isFinite(iA) ? Math.PI / 2 - (iA * Math.PI) / 180 : null,
-            inferredHeight: !(EA > 0),
+            height: taggedHeight > 0 ? taggedHeight : 8,
+            angle: Number.isFinite(taggedDirection)
+              ? Math.PI / 2 - (taggedDirection * Math.PI) / 180
+              : null,
+            inferredHeight: !(taggedHeight > 0),
           });
           this.stats.lamps++;
         }
-        if (F.natural === 'tree') {
-          this.tree(this.point(q.coordinates), F, n.id, 'node');
+        if (tags.natural === 'tree') {
+          this.tree(this.point(geometry.coordinates), tags, sourceFeature.id, 'node');
         }
         if (
-          F.highway === 'crossing' &&
-          F.crossing !== 'unmarked' &&
-          F['crossing:markings'] !== 'no'
+          tags.highway === 'crossing' &&
+          tags.crossing !== 'unmarked' &&
+          tags['crossing:markings'] !== 'no'
         ) {
-          E.push(this.point(q.coordinates));
+          crossingNodes.push(this.point(geometry.coordinates));
         }
         continue;
       }
       if (
-        (F.natural === 'tree_row' && q.type === 'LineString' && i.push(n),
-        F.footway === 'crossing' &&
-          q.type === 'LineString' &&
-          F['crossing:markings'] !== 'no' &&
-          F.crossing !== 'unmarked' &&
-          s.push(q.coordinates.map((gA) => this.point(gA))),
-        ['Polygon', 'MultiPolygon'].includes(q.type))
+        (tags.natural === 'tree_row' &&
+          geometry.type === 'LineString' &&
+          treeRows.push(sourceFeature),
+        tags.footway === 'crossing' &&
+          geometry.type === 'LineString' &&
+          tags['crossing:markings'] !== 'no' &&
+          tags.crossing !== 'unmarked' &&
+          crossingWays.push(geometry.coordinates.map((coordinate) => this.point(coordinate))),
+        ['Polygon', 'MultiPolygon'].includes(geometry.type))
       ) {
-        const gA = n.projectedPolygons || this.projection.project(q);
+        const projectedPolygons =
+          sourceFeature.projectedPolygons || this.projection.project(geometry);
         if (
-          F.building ||
-          F['building:part'] ||
-          F.natural === 'water' ||
-          F.waterway === 'riverbank'
+          tags.building ||
+          tags['building:part'] ||
+          tags.natural === 'water' ||
+          tags.waterway === 'riverbank'
         ) {
-          for (const EA of gA) {
-            this.block(EA);
+          for (const blockingPolygon of projectedPolygons) {
+            this.block(blockingPolygon);
           }
         }
         if (
-          ((F.natural === 'water' || F.waterway === 'riverbank') &&
-            this.topology.add(gA, 'water', 0.03, '#90a0b7', n, 90),
-          ['wood', 'scrub', 'grassland', 'heath'].includes(F.natural) ||
+          ((tags.natural === 'water' || tags.waterway === 'riverbank') &&
+            this.topology.add(projectedPolygons, 'water', 0.03, '#90a0b7', sourceFeature, 90),
+          ['wood', 'scrub', 'grassland', 'heath'].includes(tags.natural) ||
             [
               'forest',
               'grass',
@@ -319,63 +403,82 @@ class LandscapeGeometry {
               'orchard',
               'vineyard',
               'flowerbed',
-            ].includes(F.landuse) ||
-            ['park', 'garden'].includes(F.leisure))
+            ].includes(tags.landuse) ||
+            ['park', 'garden'].includes(tags.leisure))
         ) {
-          const EA =
-            F.natural === 'wood' ||
-            F.landuse === 'forest' ||
-            F.landuse === 'orchard' ||
-            F.leisure === 'park';
-          Q.push({
-            polygons: gA,
-            tags: F,
-            id: n.id,
-            forest: EA,
+          const generatesForest =
+            tags.natural === 'wood' ||
+            tags.landuse === 'forest' ||
+            tags.landuse === 'orchard' ||
+            tags.leisure === 'park';
+          vegetationAreas.push({
+            polygons: projectedPolygons,
+            tags: tags,
+            id: sourceFeature.id,
+            forest: generatesForest,
           });
-          this.topology.add(gA, 'grass', 0.025, '#a2b169', n, 10);
+          this.topology.add(projectedPolygons, 'grass', 0.025, '#a2b169', sourceFeature, 10);
         }
-        if ((F.highway && F.area === 'yes') || F.amenity === 'parking' || F.man_made === 'pier') {
-          const EA = F.amenity === 'parking' || F.surface === 'asphalt' || F.highway === 'service';
-          this.topology.add(gA, EA ? 'asphalt' : 'paving', 0.07, EA ? '#858989' : '#c9c2b2', n, 60);
+        if (
+          (tags.highway && tags.area === 'yes') ||
+          tags.amenity === 'parking' ||
+          tags.man_made === 'pier'
+        ) {
+          const isAsphalt =
+            tags.amenity === 'parking' || tags.surface === 'asphalt' || tags.highway === 'service';
+          this.topology.add(
+            projectedPolygons,
+            isAsphalt ? 'asphalt' : 'paving',
+            0.07,
+            isAsphalt ? '#858989' : '#c9c2b2',
+            sourceFeature,
+            60,
+          );
         }
       }
       if (
-        !F.highway ||
-        q.type !== 'LineString' ||
-        ['proposed', 'construction', 'steps'].includes(F.highway) ||
-        F.footway === 'crossing' ||
-        F.tunnel === 'yes'
+        !tags.highway ||
+        geometry.type !== 'LineString' ||
+        ['proposed', 'construction', 'steps'].includes(tags.highway) ||
+        tags.footway === 'crossing' ||
+        tags.tunnel === 'yes'
       ) {
         continue;
       }
-      const u = [];
-      for (const gA of q.coordinates) {
-        const EA = this.point(gA);
-        if (!u.length || Math.hypot(EA[0] - u.at(-1)[0], EA[1] - u.at(-1)[1]) > 0.001) {
-          u.push([...EA, 0.07]);
+      const roadPoints = [];
+      for (const coordinate of geometry.coordinates) {
+        const projectedPoint = this.point(coordinate);
+        if (
+          !roadPoints.length ||
+          Math.hypot(
+            projectedPoint[0] - roadPoints.at(-1)[0],
+            projectedPoint[1] - roadPoints.at(-1)[1],
+          ) > 0.001
+        ) {
+          roadPoints.push([...projectedPoint, 0.07]);
         }
       }
-      if (u.length < 2) {
+      if (roadPoints.length < 2) {
         continue;
       }
-      const x = ['footway', 'path', 'pedestrian', 'cycleway', 'track'].includes(F.highway);
-      const b = F.lanes || (F['lanes:forward'] || 0) + (F['lanes:backward'] || 0);
-      const m = F.highway.replace('_link', '');
-      const L = F.oneway === 'yes' || F.oneway === '-1';
-      const p = ['motorway', 'trunk'].includes(m)
+      const isPath = ['footway', 'path', 'pedestrian', 'cycleway', 'track'].includes(tags.highway);
+      const taggedLanes =
+        tags.lanes || (tags['lanes:forward'] || 0) + (tags['lanes:backward'] || 0);
+      const roadClass = tags.highway.replace('_link', '');
+      const isOneWay = tags.oneway === 'yes' || tags.oneway === '-1';
+      const laneWidth = ['motorway', 'trunk'].includes(roadClass)
         ? 3.5
-        : ['primary', 'secondary'].includes(m)
+        : ['primary', 'secondary'].includes(roadClass)
           ? 3.1
           : 2.8;
-      const Z = {
+      const pathWidths = {
         footway: 1.4,
         path: 1.2,
         pedestrian: 3,
         cycleway: 2,
         track: 2.5,
       };
-      const V = {
+      const roadWidths = {
         motorway: 7,
         trunk: 7,
         primary: 6.2,
@@ -385,109 +488,154 @@ class LandscapeGeometry {
         service: 2.8,
         living_street: 4,
       };
-      const z = F.width;
-      const DA =
-        z > 0 ? z : x ? Z[F.highway] : b ? b * p : L || F.highway.endsWith('_link') ? p : V[m] || 5;
-      const yA = x ? 0 : b || Math.max(1, Math.round(DA / p));
-      const QA = ['gravel', 'dirt', 'unpaved', 'ground', 'fine_gravel'].includes(F.surface)
+      // 显式宽度优先，其次车道数和道路类型；推断标志随 roadMetadata 返回便于诊断。
+      const taggedWidth = tags.width;
+      const roadWidth =
+        taggedWidth > 0
+          ? taggedWidth
+          : isPath
+            ? pathWidths[tags.highway]
+            : taggedLanes
+              ? taggedLanes * laneWidth
+              : isOneWay || tags.highway.endsWith('_link')
+                ? laneWidth
+                : roadWidths[roadClass] || 5;
+      const laneCount = isPath ? 0 : taggedLanes || Math.max(1, Math.round(roadWidth / laneWidth));
+      const surfaceKind = ['gravel', 'dirt', 'unpaved', 'ground', 'fine_gravel'].includes(
+        tags.surface,
+      )
         ? 'gravel'
-        : ['paving_stones', 'sett', 'cobblestone'].includes(F.surface) ||
-            (x && F.surface !== 'asphalt')
+        : ['paving_stones', 'sett', 'cobblestone'].includes(tags.surface) ||
+            (isPath && tags.surface !== 'asphalt')
           ? 'paving'
           : 'asphalt';
-      const sA = this.ribbon(u, DA);
-      const _ = {
-        id: n.id,
-        tags: F,
-        points: u,
-        width: DA,
-        lanes: yA,
+      const roadPolygon = this.ribbon(roadPoints, roadWidth);
+      const roadRecord = {
+        id: sourceFeature.id,
+        tags: tags,
+        points: roadPoints,
+        width: roadWidth,
+        lanes: laneCount,
         z: 0.07,
-        path: x,
-        kind: QA,
-        polygon: sA,
-        inferredWidth: !(z > 0),
-        inferredLanes: !b,
+        path: isPath,
+        kind: surfaceKind,
+        polygon: roadPolygon,
+        inferredWidth: !(taggedWidth > 0),
+        inferredLanes: !taggedLanes,
       };
-      this.roads.push(_);
-      this.block(this.ribbon(u, DA + 2));
+      this.roads.push(roadRecord);
+      this.block(this.ribbon(roadPoints, roadWidth + 2));
       this.stats.roads++;
-      if (_.inferredWidth) {
+      if (roadRecord.inferredWidth) {
         this.stats.inferredWidths++;
       }
     }
-    const w = [];
-    const t = [];
-    for (const n of this.roads) {
-      const { points: F, tags: q, path: u, width: x, kind: b } = n;
+    const roadPolygons = [];
+    const sidewalkPolygons = [];
+    for (const road of this.roads) {
+      const {
+        points: roadPoints,
+        tags: roadTags,
+        path: isPath,
+        width: roadWidth,
+        kind: surfaceKind,
+      } = road;
       if (
-        (C.has(b) || C.set(b, []),
-        C.get(b).push(n.polygon),
-        w.push(n.polygon),
-        !u && ['both', 'yes', 'left', 'right'].includes(q.sidewalk))
+        (roadsByMaterial.has(surfaceKind) || roadsByMaterial.set(surfaceKind, []),
+        roadsByMaterial.get(surfaceKind).push(road.polygon),
+        roadPolygons.push(road.polygon),
+        !isPath && ['both', 'yes', 'left', 'right'].includes(roadTags.sidewalk))
       ) {
-        for (const m of q.sidewalk === 'left' ? [1] : q.sidewalk === 'right' ? [-1] : [1, -1]) {
-          const L =
-            q[m === 1 ? 'sidewalk:left:width' : 'sidewalk:right:width'] ||
-            q['sidewalk:width'] ||
+        for (const sidewalkSide of roadTags.sidewalk === 'left'
+          ? [1]
+          : roadTags.sidewalk === 'right'
+            ? [-1]
+            : [1, -1]) {
+          const sidewalkWidth =
+            roadTags[sidewalkSide === 1 ? 'sidewalk:left:width' : 'sidewalk:right:width'] ||
+            roadTags['sidewalk:width'] ||
             1.5;
-          const p = [];
-          for (let Z = 0; Z < F.length; Z++) {
-            const V = F[Math.max(0, Z - 1)];
-            const z = F[Math.min(F.length - 1, Z + 1)];
-            const DA = Math.hypot(z[0] - V[0], z[1] - V[1]);
-            p.push([
-              F[Z][0] - ((((z[1] - V[1]) / DA) * (x + L)) / 2) * m,
-              F[Z][1] + ((((z[0] - V[0]) / DA) * (x + L)) / 2) * m,
+          const sidewalkPoints = [];
+          for (let vertexIndex = 0; vertexIndex < roadPoints.length; vertexIndex++) {
+            const previousPoint = roadPoints[Math.max(0, vertexIndex - 1)];
+            const nextPoint = roadPoints[Math.min(roadPoints.length - 1, vertexIndex + 1)];
+            const tangentLength = Math.hypot(
+              nextPoint[0] - previousPoint[0],
+              nextPoint[1] - previousPoint[1],
+            );
+            sidewalkPoints.push([
+              roadPoints[vertexIndex][0] -
+                ((((nextPoint[1] - previousPoint[1]) / tangentLength) *
+                  (roadWidth + sidewalkWidth)) /
+                  2) *
+                  sidewalkSide,
+              roadPoints[vertexIndex][1] +
+                ((((nextPoint[0] - previousPoint[0]) / tangentLength) *
+                  (roadWidth + sidewalkWidth)) /
+                  2) *
+                  sidewalkSide,
             ]);
           }
-          t.push(this.ribbon(p, L));
+          sidewalkPolygons.push(this.ribbon(sidewalkPoints, sidewalkWidth));
         }
       }
     }
-    for (const n of this.roads) {
-      const F = n.kind;
+    for (const road of this.roads) {
+      const surfaceKind = road.kind;
       this.topology.add(
-        [n.polygon],
-        F,
-        n.z,
-        F === 'asphalt' ? '#858989' : F === 'paving' ? '#c9c2b2' : '#aa9e83',
+        [road.polygon],
+        surfaceKind,
+        road.z,
+        surfaceKind === 'asphalt' ? '#858989' : surfaceKind === 'paving' ? '#c9c2b2' : '#aa9e83',
         {
-          id: n.id,
-          properties: n.tags,
+          id: road.id,
+          properties: road.tags,
         },
-        F === 'asphalt' ? 3 : F === 'paving' ? 2 : 1,
+        surfaceKind === 'asphalt' ? 3 : surfaceKind === 'paving' ? 2 : 1,
         'linear',
       );
     }
-    const y = t.length ? this.combine(t, w) : [];
-    this.surface(y, 'curb', 0.23, '#d6d0c3', 0.16);
-    for (const n of y) {
-      this.block(n);
+    // 人行道扣除道路面，避免路缘与路面重叠；路缘也登记为树木生成的阻挡区。
+    const visibleSidewalks = sidewalkPolygons.length
+      ? this.combine(sidewalkPolygons, roadPolygons)
+      : [];
+    this.surface(visibleSidewalks, 'curb', 0.23, '#d6d0c3', 0.16);
+    for (const sidewalkPolygon of visibleSidewalks) {
+      this.block(sidewalkPolygon);
     }
-    const Y = new StreetFurniture(this).build(features);
-    const N = new RoadMarkings(this);
-    N.build();
-    const a = [];
-    for (const n of s) {
-      const F = n[0];
-      const q = n.at(-1);
-      const u = Math.hypot(q[0] - F[0], q[1] - F[1]);
-      if (u < 1) {
+    const furnitureGeometry = new StreetFurniture(this).build(features);
+    const roadMarkings = new RoadMarkings(this);
+    roadMarkings.build();
+    const placedCrossingCenters = [];
+    for (const crossingPoints of crossingWays) {
+      const crossingStart = crossingPoints[0];
+      const crossingEnd = crossingPoints.at(-1);
+      const crossingLength = Math.hypot(
+        crossingEnd[0] - crossingStart[0],
+        crossingEnd[1] - crossingStart[1],
+      );
+      if (crossingLength < 1) {
         continue;
       }
-      const x = (q[0] - F[0]) / u;
-      const b = (q[1] - F[1]) / u;
-      a.push([(F[0] + q[0]) / 2, (F[1] + q[1]) / 2]);
-      for (let m = 0.25; m < u - 0.25; m += 0.9) {
-        const L = F[0] + x * m;
-        const p = F[1] + b * m;
+      const directionX = (crossingEnd[0] - crossingStart[0]) / crossingLength;
+      const directionY = (crossingEnd[1] - crossingStart[1]) / crossingLength;
+      placedCrossingCenters.push([
+        (crossingStart[0] + crossingEnd[0]) / 2,
+        (crossingStart[1] + crossingEnd[1]) / 2,
+      ]);
+      for (
+        let stripeDistance = 0.25;
+        stripeDistance < crossingLength - 0.25;
+        stripeDistance += 0.9
+      ) {
+        const stripeCenterX = crossingStart[0] + directionX * stripeDistance;
+        const stripeCenterY = crossingStart[1] + directionY * stripeDistance;
         this.surface(
           [
             this.ribbon(
               [
-                [L - b * 1.5, p + x * 1.5],
-                [L + b * 1.5, p - x * 1.5],
+                [stripeCenterX - directionY * 1.5, stripeCenterY + directionX * 1.5],
+                [stripeCenterX + directionY * 1.5, stripeCenterY - directionX * 1.5],
               ],
               0.45,
             ),
@@ -498,174 +646,252 @@ class LandscapeGeometry {
         );
       }
     }
-    for (const n of E) {
-      if (a.some((L) => Math.hypot(L[0] - n[0], L[1] - n[1]) < 4)) {
+    for (const crossingPosition of crossingNodes) {
+      if (
+        placedCrossingCenters.some(
+          (existingCenter) =>
+            Math.hypot(
+              existingCenter[0] - crossingPosition[0],
+              existingCenter[1] - crossingPosition[1],
+            ) < 4,
+        )
+      ) {
         continue;
       }
-      let F = null;
-      let q = 9;
-      for (const L of this.roads) {
-        if (!L.path) {
-          for (let p = 0; p < L.points.length - 1; p++) {
-            const Z = L.points[p];
-            const V = L.points[p + 1];
-            const z = V[0] - Z[0];
-            const DA = V[1] - Z[1];
-            const yA = Math.hypot(z, DA);
-            const QA = Math.max(0, Math.min(1, ((n[0] - Z[0]) * z + (n[1] - Z[1]) * DA) / yA ** 2));
-            const sA = [Z[0] + QA * z, Z[1] + QA * DA];
-            const _ = Math.hypot(sA[0] - n[0], sA[1] - n[1]);
-            if (_ < q) {
-              q = _;
-              F = {
-                road: L,
-                point: sA,
-                dx: z / yA,
-                dy: DA / yA,
+      let nearestRoad = null;
+      let nearestDistance = 9;
+      for (const candidateRoad of this.roads) {
+        if (!candidateRoad.path) {
+          for (
+            let segmentIndex = 0;
+            segmentIndex < candidateRoad.points.length - 1;
+            segmentIndex++
+          ) {
+            const segmentStart = candidateRoad.points[segmentIndex];
+            const segmentEnd = candidateRoad.points[segmentIndex + 1];
+            const deltaX = segmentEnd[0] - segmentStart[0];
+            const deltaY = segmentEnd[1] - segmentStart[1];
+            const segmentLength = Math.hypot(deltaX, deltaY);
+            const projectedFraction = Math.max(
+              0,
+              Math.min(
+                1,
+                ((crossingPosition[0] - segmentStart[0]) * deltaX +
+                  (crossingPosition[1] - segmentStart[1]) * deltaY) /
+                  segmentLength ** 2,
+              ),
+            );
+            const projectedPoint = [
+              segmentStart[0] + projectedFraction * deltaX,
+              segmentStart[1] + projectedFraction * deltaY,
+            ];
+            const distanceToRoad = Math.hypot(
+              projectedPoint[0] - crossingPosition[0],
+              projectedPoint[1] - crossingPosition[1],
+            );
+            if (distanceToRoad < nearestDistance) {
+              nearestDistance = distanceToRoad;
+              nearestRoad = {
+                road: candidateRoad,
+                point: projectedPoint,
+                dx: deltaX / segmentLength,
+                dy: deltaY / segmentLength,
               };
             }
           }
         }
       }
-      if (!F) {
+      if (!nearestRoad) {
         continue;
       }
-      const { road: u, point: x, dx: b, dy: m } = F;
-      a.push(x);
-      for (let L = -u.width / 2 + 0.6; L < u.width / 2 - 0.2; L += 1) {
-        const p = [x[0] - m * L, x[1] + b * L];
+      const {
+        road: crossingRoad,
+        point: roadPoint,
+        dx: roadDirectionX,
+        dy: roadDirectionY,
+      } = nearestRoad;
+      placedCrossingCenters.push(roadPoint);
+      for (
+        let stripeOffset = -crossingRoad.width / 2 + 0.6;
+        stripeOffset < crossingRoad.width / 2 - 0.2;
+        stripeOffset += 1
+      ) {
+        const stripeCenter = [
+          roadPoint[0] - roadDirectionY * stripeOffset,
+          roadPoint[1] + roadDirectionX * stripeOffset,
+        ];
         this.surface(
           [
             this.ribbon(
               [
-                [p[0] - b * 1.7, p[1] - m * 1.7],
-                [p[0] + b * 1.7, p[1] + m * 1.7],
+                [stripeCenter[0] - roadDirectionX * 1.7, stripeCenter[1] - roadDirectionY * 1.7],
+                [stripeCenter[0] + roadDirectionX * 1.7, stripeCenter[1] + roadDirectionY * 1.7],
               ],
               0.45,
             ),
           ],
           'crossings',
-          u,
+          crossingRoad,
           '#f2efe4',
         );
       }
       this.stats.crossings++;
     }
-    N.ground([...this.markings.polygons, ...this.markings.crossings], C.get('asphalt') || []);
-    for (const n of i) {
-      const F = n.geometry.coordinates.map((x) => this.point(x));
-      let q = 0;
-      let u = 0;
-      for (let x = 0; x < F.length - 1; x++) {
-        const b = F[x];
-        const m = F[x + 1];
-        const L = Math.hypot(m[0] - b[0], m[1] - b[1]);
-        for (; q < L; q += 9) {
+    roadMarkings.ground(
+      [...this.markings.polygons, ...this.markings.crossings],
+      roadsByMaterial.get('asphalt') || [],
+    );
+    for (const treeRow of treeRows) {
+      const rowPoints = treeRow.geometry.coordinates.map((coordinate) => this.point(coordinate));
+      let distanceAlongSegment = 0;
+      let treeIndex = 0;
+      for (let segmentIndex = 0; segmentIndex < rowPoints.length - 1; segmentIndex++) {
+        const segmentStart = rowPoints[segmentIndex];
+        const segmentEnd = rowPoints[segmentIndex + 1];
+        const segmentLength = Math.hypot(
+          segmentEnd[0] - segmentStart[0],
+          segmentEnd[1] - segmentStart[1],
+        );
+        for (; distanceAlongSegment < segmentLength; distanceAlongSegment += 9) {
           this.tree(
-            [b[0] + ((m[0] - b[0]) * q) / L, b[1] + ((m[1] - b[1]) * q) / L],
-            n.properties,
-            `${n.id}/${u++}`,
+            [
+              segmentStart[0] +
+                ((segmentEnd[0] - segmentStart[0]) * distanceAlongSegment) / segmentLength,
+              segmentStart[1] +
+                ((segmentEnd[1] - segmentStart[1]) * distanceAlongSegment) / segmentLength,
+            ],
+            treeRow.properties,
+            `${treeRow.id}/${treeIndex++}`,
             'row',
           );
         }
-        q -= L;
+        distanceAlongSegment -= segmentLength;
       }
     }
-    const K = this.point([this.bounds.west, this.bounds.south]);
-    const e = this.point([this.bounds.east, this.bounds.north]);
-    const G = Math.cos((Math.round(this.anchor[1]) * Math.PI) / 180);
-    const J = this.projection.scale / G;
-    const S = [this.projection.originX * G, this.projection.originY * G];
-    for (const n of Q) {
-      if (n.forest) {
-        for (const F of n.polygons) {
-          const q = [1 / 0, 1 / 0, -1 / 0, -1 / 0];
-          for (const u of F[0]) {
-            q[0] = Math.min(q[0], u[0]);
-            q[1] = Math.min(q[1], u[1]);
-            q[2] = Math.max(q[2], u[0]);
-            q[3] = Math.max(q[3], u[1]);
+    const tileMinimum = this.point([this.bounds.west, this.bounds.south]);
+    const tileMaximum = this.point([this.bounds.east, this.bounds.north]);
+    // 使用近似全球固定的网格和坐标哈希布树，减少相邻瓦片的随机接缝与重复布局。
+    const latitudeGridScale = Math.cos((Math.round(this.anchor[1]) * Math.PI) / 180);
+    const localGridScale = this.projection.scale / latitudeGridScale;
+    const worldGridOrigin = [
+      this.projection.originX * latitudeGridScale,
+      this.projection.originY * latitudeGridScale,
+    ];
+    for (const vegetationArea of vegetationAreas) {
+      if (vegetationArea.forest) {
+        for (const forestPolygon of vegetationArea.polygons) {
+          const forestBounds = [1 / 0, 1 / 0, -1 / 0, -1 / 0];
+          for (const vertex of forestPolygon[0]) {
+            forestBounds[0] = Math.min(forestBounds[0], vertex[0]);
+            forestBounds[1] = Math.min(forestBounds[1], vertex[1]);
+            forestBounds[2] = Math.max(forestBounds[2], vertex[0]);
+            forestBounds[3] = Math.max(forestBounds[3], vertex[1]);
           }
           for (
-            let u = Math.floor((Math.max(K[0], q[0]) / J + S[0]) / 11);
-            u <= Math.ceil((Math.min(e[0], q[2]) / J + S[0]) / 11);
-            u++
+            let gridX = Math.floor(
+              (Math.max(tileMinimum[0], forestBounds[0]) / localGridScale + worldGridOrigin[0]) /
+                11,
+            );
+            gridX <=
+            Math.ceil(
+              (Math.min(tileMaximum[0], forestBounds[2]) / localGridScale + worldGridOrigin[0]) /
+                11,
+            );
+            gridX++
           ) {
             for (
-              let x = Math.floor((Math.max(K[1], q[1]) / J + S[1]) / 11);
-              x <= Math.ceil((Math.min(e[1], q[3]) / J + S[1]) / 11);
-              x++
+              let gridY = Math.floor(
+                (Math.max(tileMinimum[1], forestBounds[1]) / localGridScale + worldGridOrigin[1]) /
+                  11,
+              );
+              gridY <=
+              Math.ceil(
+                (Math.min(tileMaximum[1], forestBounds[3]) / localGridScale + worldGridOrigin[1]) /
+                  11,
+              );
+              gridY++
             ) {
-              const b = Math.imul(u, 73856093) ^ Math.imul(x, 19349663);
-              const m = [
-                (u * 11 + this.random(b) * 6 - S[0]) * J,
-                (x * 11 + this.random(b + 1) * 6 - S[1]) * J,
+              const treeSeed = Math.imul(gridX, 73856093) ^ Math.imul(gridY, 19349663);
+              const treePosition = [
+                (gridX * 11 + this.random(treeSeed) * 6 - worldGridOrigin[0]) * localGridScale,
+                (gridY * 11 + this.random(treeSeed + 1) * 6 - worldGridOrigin[1]) * localGridScale,
               ];
-              if (this.contains(m, F)) {
-                this.tree(m, n.tags, `${n.id}/${u}/${x}`, 'area');
+              if (this.contains(treePosition, forestPolygon)) {
+                this.tree(
+                  treePosition,
+                  vegetationArea.tags,
+                  `${vegetationArea.id}/${gridX}/${gridY}`,
+                  'area',
+                );
               }
             }
           }
         }
       }
     }
-    for (const n of this.lamps) {
-      let F = 30;
-      for (const q of this.roads) {
-        for (let u = 1; u < q.points.length; u++) {
-          const x = q.points[u - 1];
-          const b = q.points[u];
-          const m = b[0] - x[0];
-          const L = b[1] - x[1];
-          const p = Math.max(
+    // 缺少方向的路灯朝向最近道路，并插值得到道路高度，保留显式标注的朝向。
+    for (const lamp of this.lamps) {
+      let nearestRoadDistance = 30;
+      for (const road of this.roads) {
+        for (let segmentIndex = 1; segmentIndex < road.points.length; segmentIndex++) {
+          const segmentStart = road.points[segmentIndex - 1];
+          const segmentEnd = road.points[segmentIndex];
+          const deltaX = segmentEnd[0] - segmentStart[0];
+          const deltaY = segmentEnd[1] - segmentStart[1];
+          const projectedFraction = Math.max(
             0,
-            Math.min(1, ((n.x - x[0]) * m + (n.y - x[1]) * L) / (m * m + L * L)),
+            Math.min(
+              1,
+              ((lamp.x - segmentStart[0]) * deltaX + (lamp.y - segmentStart[1]) * deltaY) /
+                (deltaX * deltaX + deltaY * deltaY),
+            ),
           );
-          const Z = x[0] + m * p - n.x;
-          const V = x[1] + L * p - n.y;
-          const z = Math.hypot(Z, V);
-          if (!(z >= F)) {
-            F = z;
-            n.roadAngle = Math.atan2(V, Z);
-            n.z = x[2] + (b[2] - x[2]) * p + 0.02;
+          const offsetX = segmentStart[0] + deltaX * projectedFraction - lamp.x;
+          const offsetY = segmentStart[1] + deltaY * projectedFraction - lamp.y;
+          const distanceToRoad = Math.hypot(offsetX, offsetY);
+          if (!(distanceToRoad >= nearestRoadDistance)) {
+            nearestRoadDistance = distanceToRoad;
+            lamp.roadAngle = Math.atan2(offsetY, offsetX);
+            lamp.z = segmentStart[2] + (segmentEnd[2] - segmentStart[2]) * projectedFraction + 0.02;
           }
         }
       }
-      n.angle ??= n.roadAngle ?? 0;
+      lamp.angle ??= lamp.roadAngle ?? 0;
     }
-    const U = this.topology.build(this);
+    // 布尔裁剪完成后再转为可转移 TypedArray，供 Worker 零拷贝交给主线程上传。
+    const topologyGeometry = this.topology.build(this);
     this.buffers.markings = this.buffers.markingGround || {
       positions: [],
       colors: [],
     };
     delete this.buffers.markingGround;
-    const j = new Float32Array(this.buffers.water?.positions || []);
+    const waterPositions = new Float32Array(this.buffers.water?.positions || []);
     delete this.buffers.water;
     this.buffers.grass ||= {
       positions: [],
       colors: [],
     };
-    U.surfaceSources.water ||= [];
-    U.surfaceSources.grass ||= [];
-    for (const n of Object.values(this.buffers)) {
-      n.positions = new Float32Array(n.positions);
-      n.colors = new Float32Array(n.colors);
+    topologyGeometry.surfaceSources.water ||= [];
+    topologyGeometry.surfaceSources.grass ||= [];
+    for (const surfaceBuffer of Object.values(this.buffers)) {
+      surfaceBuffer.positions = new Float32Array(surfaceBuffer.positions);
+      surfaceBuffer.colors = new Float32Array(surfaceBuffer.colors);
     }
     return {
-      ...Y,
-      ...U,
+      ...furnitureGeometry,
+      ...topologyGeometry,
       surfaces: this.buffers,
-      water: j,
+      water: waterPositions,
       trees: this.trees,
       lamps: this.lamps,
       traffic: TrafficRoutes.build(this.roads),
       landscapeStats: this.stats,
-      roadMetadata: this.roads.map((n) => ({
-        id: n.id,
-        width: n.width,
-        lanes: n.lanes,
-        inferredWidth: n.inferredWidth,
-        inferredLanes: n.inferredLanes,
+      roadMetadata: this.roads.map((road) => ({
+        id: road.id,
+        width: road.width,
+        lanes: road.lanes,
+        inferredWidth: road.inferredWidth,
+        inferredLanes: road.inferredLanes,
       })),
     };
   }

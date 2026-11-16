@@ -1,257 +1,295 @@
 // Reconstructed from the existing Atlas page; see SOURCES.md for provenance.
 class CoplanarClipping {
-  static area(A) {
-    let C = 0;
-    for (let Q = 0; Q < A.length; Q++) {
-      const i = A[Q];
-      const E = A[(Q + 1) % A.length];
-      C += i[0] * E[1] - E[0] * i[1];
+  static area(polygon) {
+    let signedDoubleArea = 0;
+    for (let vertexIndex = 0; vertexIndex < polygon.length; vertexIndex++) {
+      const vertex = polygon[vertexIndex];
+      const nextVertex = polygon[(vertexIndex + 1) % polygon.length];
+      signedDoubleArea += vertex[0] * nextVertex[1] - nextVertex[0] * vertex[1];
     }
-    return Math.abs(C) / 2;
+    return Math.abs(signedDoubleArea) / 2;
   }
-  static subtract(A, C) {
-    let Q = A;
-    const i = [];
-    for (let E = 0; E < 3; E++) {
-      const s = C[E];
-      const w = C[(E + 1) % 3];
-      const t = w[0] - s[0];
-      const y = w[1] - s[1];
-      const Y = [];
-      const N = [];
-      for (let a = 0; a < Q.length; a++) {
-        const K = Q[a];
-        const e = Q[(a + 1) % Q.length];
-        const G = t * (K[1] - s[1]) - y * (K[0] - s[0]);
-        const J = t * (e[1] - s[1]) - y * (e[0] - s[0]);
-        if ((G >= 0 && Y.push(K), G <= 0 && N.push(K), G * J < 0)) {
-          const S = G / (G - J);
-          const U = [K[0] + (e[0] - K[0]) * S, K[1] + (e[1] - K[1]) * S];
-          Y.push(U);
-          N.push(U);
+  static subtract(polygon, clipTriangle) {
+    // 按裁剪三角形的逆时针半平面逐边分割，收集外侧片段作为差集。
+    let remainingPolygon = polygon;
+    const outsidePolygons = [];
+    for (let edgeIndex = 0; edgeIndex < 3; edgeIndex++) {
+      const edgeStart = clipTriangle[edgeIndex];
+      const edgeEnd = clipTriangle[(edgeIndex + 1) % 3];
+      const edgeX = edgeEnd[0] - edgeStart[0];
+      const edgeY = edgeEnd[1] - edgeStart[1];
+      const insideVertices = [];
+      const outsideVertices = [];
+      for (let vertexIndex = 0; vertexIndex < remainingPolygon.length; vertexIndex++) {
+        const vertex = remainingPolygon[vertexIndex];
+        const nextVertex = remainingPolygon[(vertexIndex + 1) % remainingPolygon.length];
+        const signedDistance =
+          edgeX * (vertex[1] - edgeStart[1]) - edgeY * (vertex[0] - edgeStart[0]);
+        const nextSignedDistance =
+          edgeX * (nextVertex[1] - edgeStart[1]) - edgeY * (nextVertex[0] - edgeStart[0]);
+        if (
+          (signedDistance >= 0 && insideVertices.push(vertex),
+          signedDistance <= 0 && outsideVertices.push(vertex),
+          signedDistance * nextSignedDistance < 0)
+        ) {
+          const intersectionRatio = signedDistance / (signedDistance - nextSignedDistance);
+          const intersection = [
+            vertex[0] + (nextVertex[0] - vertex[0]) * intersectionRatio,
+            vertex[1] + (nextVertex[1] - vertex[1]) * intersectionRatio,
+          ];
+          insideVertices.push(intersection);
+          outsideVertices.push(intersection);
         }
       }
-      if (Y.length < 3 || this.area(Y) < 1e-8) {
-        return [A];
+      if (insideVertices.length < 3 || this.area(insideVertices) < 1e-8) {
+        return [polygon];
       }
-      if (N.length >= 3 && this.area(N) > 1e-8) {
-        i.push(N);
+      if (outsideVertices.length >= 3 && this.area(outsideVertices) > 1e-8) {
+        outsidePolygons.push(outsideVertices);
       }
-      Q = Y;
+      remainingPolygon = insideVertices;
     }
-    return i;
+    return outsidePolygons;
   }
-  static resolve(A, C, Q, i = null) {
-    const E = new Map();
-    const s = new Map();
-    for (let N = 0; N < Q.length; N++) {
-      const a = Q[N];
-      for (let K = a.startTriangle * 9; K < (a.startTriangle + a.triangleCount) * 9; K += 9) {
-        const e = A.slice(K, K + 3);
-        const G = A.slice(K + 3, K + 6);
-        const J = A.slice(K + 6, K + 9);
-        const S = G[0] - e[0];
-        const U = G[1] - e[1];
-        const j = G[2] - e[2];
-        const n = J[0] - e[0];
-        const F = J[1] - e[1];
-        const q = J[2] - e[2];
-        const u = [U * q - j * F, j * n - S * q, S * F - U * n];
-        let x = 0;
-        if (Math.abs(u[1]) > Math.abs(u[x])) {
-          x = 1;
+  static resolve(positions, colors, features, materials = null) {
+    // 沿法向量最大分量投影到二维；量化平面参数只用于分组，候选仍需精确共面检查。
+    const planeGroups = new Map();
+    const replacements = new Map();
+    for (let ownerIndex = 0; ownerIndex < features.length; ownerIndex++) {
+      const feature = features[ownerIndex];
+      for (
+        let triangleOffset = feature.startTriangle * 9;
+        triangleOffset < (feature.startTriangle + feature.triangleCount) * 9;
+        triangleOffset += 9
+      ) {
+        const vertexA = positions.slice(triangleOffset, triangleOffset + 3);
+        const vertexB = positions.slice(triangleOffset + 3, triangleOffset + 6);
+        const vertexC = positions.slice(triangleOffset + 6, triangleOffset + 9);
+        const edgeABX = vertexB[0] - vertexA[0];
+        const edgeABY = vertexB[1] - vertexA[1];
+        const edgeABZ = vertexB[2] - vertexA[2];
+        const edgeACX = vertexC[0] - vertexA[0];
+        const edgeACY = vertexC[1] - vertexA[1];
+        const edgeACZ = vertexC[2] - vertexA[2];
+        const normal = [
+          edgeABY * edgeACZ - edgeABZ * edgeACY,
+          edgeABZ * edgeACX - edgeABX * edgeACZ,
+          edgeABX * edgeACY - edgeABY * edgeACX,
+        ];
+        let dominantAxis = 0;
+        if (Math.abs(normal[1]) > Math.abs(normal[dominantAxis])) {
+          dominantAxis = 1;
         }
-        if (Math.abs(u[2]) > Math.abs(u[x])) {
-          x = 2;
+        if (Math.abs(normal[2]) > Math.abs(normal[dominantAxis])) {
+          dominantAxis = 2;
         }
-        const b = (x + 1) % 3;
-        const m = (x + 2) % 3;
-        const L = -u[b] / u[x];
-        const p = -u[m] / u[x];
-        const Z = e[x] - L * e[b] - p * e[m];
-        const V = `${x}/${Math.round(L * 10000000)}/${Math.round(p * 10000000)}/${Math.round(Z * 100000)}`;
-        let z = E.get(V);
-        if (!z) {
-          z = {
+        const firstAxis = (dominantAxis + 1) % 3;
+        const secondAxis = (dominantAxis + 2) % 3;
+        const slopeA = -normal[firstAxis] / normal[dominantAxis];
+        const slopeB = -normal[secondAxis] / normal[dominantAxis];
+        const planeOffset =
+          vertexA[dominantAxis] - slopeA * vertexA[firstAxis] - slopeB * vertexA[secondAxis];
+        const planeKey = `${dominantAxis}/${Math.round(slopeA * 10000000)}/${Math.round(slopeB * 10000000)}/${Math.round(planeOffset * 100000)}`;
+        let planeGroup = planeGroups.get(planeKey);
+        if (!planeGroup) {
+          planeGroup = {
             entries: [],
             owners: new Set(),
           };
-          E.set(V, z);
+          planeGroups.set(planeKey, planeGroup);
         }
-        z.entries.push({
-          index: K,
-          owner: N,
-          axis: x,
-          first: b,
-          second: m,
-          slopeA: L,
-          slopeB: p,
-          offset: Z,
+        planeGroup.entries.push({
+          index: triangleOffset,
+          owner: ownerIndex,
+          axis: dominantAxis,
+          first: firstAxis,
+          second: secondAxis,
+          slopeA: slopeA,
+          slopeB: slopeB,
+          offset: planeOffset,
           points: [
-            [e[b], e[m]],
-            [G[b], G[m]],
-            [J[b], J[m]],
+            [vertexA[firstAxis], vertexA[secondAxis]],
+            [vertexB[firstAxis], vertexB[secondAxis]],
+            [vertexC[firstAxis], vertexC[secondAxis]],
           ],
         });
-        z.owners.add(N);
+        planeGroup.owners.add(ownerIndex);
       }
     }
-    for (const N of E.values()) {
-      if (N.owners.size < 2) {
+    for (const planeGroup of planeGroups.values()) {
+      if (planeGroup.owners.size < 2) {
         continue;
       }
-      const a = new Map();
-      const K = [];
-      for (const e of N.entries) {
-        const G = e.points;
-        const J = [
-          Math.min(...G.map((m) => m[0])),
-          Math.min(...G.map((m) => m[1])),
-          Math.max(...G.map((m) => m[0])),
-          Math.max(...G.map((m) => m[1])),
+      const spatialCells = new Map();
+      const largeTriangles = [];
+      for (const triangle of planeGroup.entries) {
+        const projectedPoints = triangle.points;
+        const bounds = [
+          Math.min(...projectedPoints.map((point) => point[0])),
+          Math.min(...projectedPoints.map((point) => point[1])),
+          Math.max(...projectedPoints.map((point) => point[0])),
+          Math.max(...projectedPoints.map((point) => point[1])),
         ];
-        const S = Math.floor(J[0] / 32);
-        const U = Math.floor(J[1] / 32);
-        const j = Math.floor(J[2] / 32);
-        const n = Math.floor(J[3] / 32);
-        const F = new Set(K);
-        const q = (j - S + 1) * (n - U + 1) > 4096;
-        if (q) {
-          for (const m of a.values()) {
-            for (const L of m) {
-              F.add(L);
+        const minCellX = Math.floor(bounds[0] / 32);
+        const minCellY = Math.floor(bounds[1] / 32);
+        const maxCellX = Math.floor(bounds[2] / 32);
+        const maxCellY = Math.floor(bounds[3] / 32);
+        const candidates = new Set(largeTriangles);
+        // 每格 32 米，覆盖超过 4096 格的三角形单独保存，避免空间哈希膨胀。
+        const exceedsCellLimit = (maxCellX - minCellX + 1) * (maxCellY - minCellY + 1) > 4096;
+        if (exceedsCellLimit) {
+          for (const cellEntries of spatialCells.values()) {
+            for (const candidate of cellEntries) {
+              candidates.add(candidate);
             }
           }
         } else {
-          for (let m = S; m <= j; m++) {
-            for (let L = U; L <= n; L++) {
-              for (const p of a.get(`${m}/${L}`) || []) {
-                F.add(p);
+          for (let cellX = minCellX; cellX <= maxCellX; cellX++) {
+            for (let cellY = minCellY; cellY <= maxCellY; cellY++) {
+              for (const candidate of spatialCells.get(`${cellX}/${cellY}`) || []) {
+                candidates.add(candidate);
               }
             }
           }
         }
-        let u = [G];
-        for (const m of F) {
+        // 仅减去其他要素已经登记的共面三角形，按处理顺序消除重复覆盖。
+        let fragments = [projectedPoints];
+        for (const candidate of candidates) {
           if (
-            m.owner === e.owner ||
-            m.bounds[0] >= J[2] - 1e-7 ||
-            m.bounds[2] <= J[0] + 1e-7 ||
-            m.bounds[1] >= J[3] - 1e-7 ||
-            m.bounds[3] <= J[1] + 1e-7
+            candidate.owner === triangle.owner ||
+            candidate.bounds[0] >= bounds[2] - 1e-7 ||
+            candidate.bounds[2] <= bounds[0] + 1e-7 ||
+            candidate.bounds[1] >= bounds[3] - 1e-7 ||
+            candidate.bounds[3] <= bounds[1] + 1e-7
           ) {
             continue;
           }
-          let L = true;
-          for (const Z of G) {
+          let isCoplanar = true;
+          for (const point of projectedPoints) {
             if (
               Math.abs(
-                (e.slopeA - m.slopeA) * Z[0] + (e.slopeB - m.slopeB) * Z[1] + e.offset - m.offset,
+                (triangle.slopeA - candidate.slopeA) * point[0] +
+                  (triangle.slopeB - candidate.slopeB) * point[1] +
+                  triangle.offset -
+                  candidate.offset,
               ) > 0.00001
             ) {
-              L = false;
+              isCoplanar = false;
             }
           }
-          if (!L) {
+          if (!isCoplanar) {
             continue;
           }
-          const p = [];
-          for (const Z of u) {
-            p.push(...this.subtract(Z, m.points));
+          const remainingFragments = [];
+          for (const fragment of fragments) {
+            remainingFragments.push(...this.subtract(fragment, candidate.points));
           }
-          if (((u = p), !u.length)) {
+          if (((fragments = remainingFragments), !fragments.length)) {
             break;
           }
         }
-        if (u.length !== 1 || u[0] !== G) {
-          const m = [];
-          for (const L of u) {
-            for (let p = 1; p < L.length - 1; p++) {
-              const Z = [L[0], L[p], L[p + 1]];
-              if (!(this.area(Z) < 1e-8)) {
-                for (const V of Z) {
-                  const z = [0, 0, 0];
-                  z[e.first] = V[0];
-                  z[e.second] = V[1];
-                  z[e.axis] = e.slopeA * V[0] + e.slopeB * V[1] + e.offset;
-                  m.push(...z);
+        if (fragments.length !== 1 || fragments[0] !== projectedPoints) {
+          const replacementPositions = [];
+          for (const fragment of fragments) {
+            for (let fanIndex = 1; fanIndex < fragment.length - 1; fanIndex++) {
+              const projectedTriangle = [fragment[0], fragment[fanIndex], fragment[fanIndex + 1]];
+              if (!(this.area(projectedTriangle) < 1e-8)) {
+                for (const point of projectedTriangle) {
+                  const vertex = [0, 0, 0];
+                  vertex[triangle.first] = point[0];
+                  vertex[triangle.second] = point[1];
+                  vertex[triangle.axis] =
+                    triangle.slopeA * point[0] + triangle.slopeB * point[1] + triangle.offset;
+                  replacementPositions.push(...vertex);
                 }
               }
             }
           }
-          s.set(e.index, m);
+          replacements.set(triangle.index, replacementPositions);
         }
-        const x =
-          (G[1][0] - G[0][0]) * (G[2][1] - G[0][1]) - (G[1][1] - G[0][1]) * (G[2][0] - G[0][0]);
-        const b = {
-          ...e,
-          bounds: J,
-          points: x < 0 ? [G[0], G[2], G[1]] : G,
+        const signedDoubleArea =
+          (projectedPoints[1][0] - projectedPoints[0][0]) *
+            (projectedPoints[2][1] - projectedPoints[0][1]) -
+          (projectedPoints[1][1] - projectedPoints[0][1]) *
+            (projectedPoints[2][0] - projectedPoints[0][0]);
+        // 统一裁剪边的绕序，确保差集算法将左侧识别为三角形内部。
+        const indexedTriangle = {
+          ...triangle,
+          bounds: bounds,
+          points:
+            signedDoubleArea < 0
+              ? [projectedPoints[0], projectedPoints[2], projectedPoints[1]]
+              : projectedPoints,
         };
-        if (q) {
-          K.push(b);
+        if (exceedsCellLimit) {
+          largeTriangles.push(indexedTriangle);
         } else {
-          for (let m = S; m <= j; m++) {
-            for (let L = U; L <= n; L++) {
-              const p = `${m}/${L}`;
-              if (!a.has(p)) {
-                a.set(p, []);
+          for (let cellX = minCellX; cellX <= maxCellX; cellX++) {
+            for (let cellY = minCellY; cellY <= maxCellY; cellY++) {
+              const cellKey = `${cellX}/${cellY}`;
+              if (!spatialCells.has(cellKey)) {
+                spatialCells.set(cellKey, []);
               }
-              a.get(p).push(b);
+              spatialCells.get(cellKey).push(indexedTriangle);
             }
           }
         }
       }
     }
-    if (!s.size) {
+    if (!replacements.size) {
       return {
-        positions: A,
-        colors: C,
-        materials: i,
-        features: Q,
+        positions: positions,
+        colors: colors,
+        materials: materials,
+        features: features,
         clipped: 0,
       };
     }
-    const w = [];
-    const t = [];
-    const y = [];
-    const Y = [];
-    for (const N of Q) {
-      const a = w.length;
-      const K = N.startTriangle * 9;
-      const e = K + N.triangleCount * 9;
-      for (let G = K; G < e; G += 9) {
-        const J = s.get(G);
-        if (J) {
-          for (let S = 0; S < J.length; S++) {
-            w.push(J[S]);
-            t.push(C[G + (S % 3)]);
-            if (i) {
-              y.push(i[G + (S % 3)]);
+    // 重建顶点后同步更新要素的三角形区间，颜色与材质沿用原三角形属性。
+    const outputPositions = [];
+    const outputColors = [];
+    const outputMaterials = [];
+    const outputFeatures = [];
+    for (const feature of features) {
+      const featureStart = outputPositions.length;
+      const startOffset = feature.startTriangle * 9;
+      const endOffset = startOffset + feature.triangleCount * 9;
+      for (let triangleOffset = startOffset; triangleOffset < endOffset; triangleOffset += 9) {
+        const replacement = replacements.get(triangleOffset);
+        if (replacement) {
+          for (let componentOffset = 0; componentOffset < replacement.length; componentOffset++) {
+            outputPositions.push(replacement[componentOffset]);
+            outputColors.push(colors[triangleOffset + (componentOffset % 3)]);
+            if (materials) {
+              outputMaterials.push(materials[triangleOffset + (componentOffset % 3)]);
             }
           }
         } else {
-          for (let S = G; S < G + 9; S++) {
-            w.push(A[S]);
-            t.push(C[S]);
-            if (i) {
-              y.push(i[S]);
+          for (
+            let sourceOffset = triangleOffset;
+            sourceOffset < triangleOffset + 9;
+            sourceOffset++
+          ) {
+            outputPositions.push(positions[sourceOffset]);
+            outputColors.push(colors[sourceOffset]);
+            if (materials) {
+              outputMaterials.push(materials[sourceOffset]);
             }
           }
         }
       }
-      N.startTriangle = a / 9;
-      N.triangleCount = (w.length - a) / 9;
-      if (N.triangleCount) {
-        Y.push(N);
+      feature.startTriangle = featureStart / 9;
+      feature.triangleCount = (outputPositions.length - featureStart) / 9;
+      if (feature.triangleCount) {
+        outputFeatures.push(feature);
       }
     }
     return {
-      positions: w,
-      colors: t,
-      materials: i ? y : null,
-      features: Y,
-      clipped: s.size,
+      positions: outputPositions,
+      colors: outputColors,
+      materials: materials ? outputMaterials : null,
+      features: outputFeatures,
+      clipped: replacements.size,
     };
   }
 }

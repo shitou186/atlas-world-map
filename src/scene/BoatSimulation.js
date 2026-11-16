@@ -27,24 +27,25 @@ class BoatSimulation {
     this.point = new Float64Array(4);
     this.before = new Float64Array(4);
     this.after = new Float64Array(4);
-    const i = BoatAssets.geometry.clone();
+    const geometry = BoatAssets.geometry.clone();
     this.sphere = new Sphere(
       new Vector3(),
-      i.boundingSphere.radius + i.boundingSphere.center.length(),
+      geometry.boundingSphere.radius + geometry.boundingSphere.center.length(),
     );
-    const o = i.boundingBox.getSize(new Vector3());
-    const p = new MeshLambertMaterial({
+    const dimensions = geometry.boundingBox.getSize(new Vector3());
+    const material = new MeshLambertMaterial({
       vertexColors: true,
     });
-    this.mesh = new InstancedMesh(i, p, this.capacity);
+    // 船体与尾流分别使用实例化网格，每帧只更新实际可见的实例。
+    this.mesh = new InstancedMesh(geometry, material, this.capacity);
     this.mesh.instanceMatrix.setUsage(DynamicDrawUsage);
     this.mesh.frustumCulled = false;
     this.mesh.receiveShadow = true;
     this.mesh.count = 0;
-    const x = o.x * 1.25;
-    this.wakeOffset = i.boundingBox.min.x - x / 2;
-    const T = new PlaneGeometry(x, o.y * 2);
-    const w = new ShaderMaterial({
+    const wakeLength = dimensions.x * 1.25;
+    this.wakeOffset = geometry.boundingBox.min.x - wakeLength / 2;
+    const wakeGeometry = new PlaneGeometry(wakeLength, dimensions.y * 2);
+    const wakeMaterial = new ShaderMaterial({
       transparent: true,
       depthWrite: false,
       polygonOffset: true,
@@ -55,69 +56,76 @@ class BoatSimulation {
       fragmentShader:
         'varying vec2 waterUv;void main(){float x=waterUv.x;float edge=abs(waterUv.y-.5);float v=exp(-pow((edge-(1.0-x)*.42)*55.0,2.0));float fade=smoothstep(0.0,.18,x)*(1.0-smoothstep(.75,1.0,x));gl_FragColor=vec4(.82,.86,.85,v*fade*.22);}',
     });
-    this.wake = new InstancedMesh(T, w, this.capacity);
+    this.wake = new InstancedMesh(wakeGeometry, wakeMaterial, this.capacity);
     this.wake.instanceMatrix.setUsage(DynamicDrawUsage);
     this.wake.frustumCulled = false;
     this.wake.count = 0;
     this.group.add(this.mesh, this.wake);
   }
-  setData(i) {
-    this.routes = i;
+  setData(routes) {
+    this.routes = routes;
     this.viewKey = '';
-    for (const o of i) {
-      const p = o.bounds;
-      o.sphere = new Sphere(
-        new Vector3((p[0] + p[2]) / 2, (p[1] + p[3]) / 2, 0),
-        Math.hypot(p[2] - p[0], p[3] - p[1]) / 2 + this.sphere.radius,
+    for (const route of routes) {
+      const bounds = route.bounds;
+      route.sphere = new Sphere(
+        new Vector3((bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2, 0),
+        Math.hypot(bounds[2] - bounds[0], bounds[3] - bounds[1]) / 2 + this.sphere.radius,
       );
     }
   }
-  update(i, o, p, x) {
-    const T = performance.now();
+  update(cameraPosition, frustum, visible, viewKey) {
+    // 隐藏页面或暂停运动时不推进时钟，并限制恢复后的单帧时间增量。
+    const now = performance.now();
     if (
       (this.enabled &&
         this.moving &&
-        p &&
+        visible &&
         !document.hidden &&
-        (this.clock += Math.min(0.1, (T - this.lastTime) / 1000)),
-      (this.lastTime = T),
-      (this.group.visible = p && this.enabled),
+        (this.clock += Math.min(0.1, (now - this.lastTime) / 1000)),
+      (this.lastTime = now),
+      (this.group.visible = visible && this.enabled),
       !this.group.visible)
     ) {
       return false;
     }
-    if (this.viewKey !== x) {
-      this.viewKey = x;
+    // 视图变化时先裁剪整条路线，逐船采样后再做包围球和距离检查。
+    if (this.viewKey !== viewKey) {
+      this.viewKey = viewKey;
       this.candidates = this.routes.filter(
-        (w) =>
-          o.intersectsSphere(w.sphere) && i.distanceTo(w.sphere.center) - w.sphere.radius < 4000,
+        (route) =>
+          frustum.intersectsSphere(route.sphere) &&
+          cameraPosition.distanceTo(route.sphere.center) - route.sphere.radius < 4000,
       );
     }
     this.count = 0;
-    for (const w of this.candidates) {
-      for (let l = 0; l < w.count && this.count < this.capacity; l++) {
-        const D =
-          (((w.seed % 997) / 997) * w.length + (l * w.length) / w.count + this.clock * w.speed) %
-          w.length;
+    for (const route of this.candidates) {
+      for (let boatIndex = 0; boatIndex < route.count && this.count < this.capacity; boatIndex++) {
+        const distance =
+          (((route.seed % 997) / 997) * route.length +
+            (boatIndex * route.length) / route.count +
+            this.clock * route.speed) %
+          route.length;
         if (
-          (TrafficRoutes.sample(w, D, this.point),
+          (TrafficRoutes.sample(route, distance, this.point),
           this.sphere.center.set(this.point[0], this.point[1], 2),
-          !o.intersectsSphere(this.sphere) || i.distanceTo(this.sphere.center) > 4000)
+          !frustum.intersectsSphere(this.sphere) ||
+            cameraPosition.distanceTo(this.sphere.center) > 4000)
         ) {
           continue;
         }
-        TrafficRoutes.sample(w, Math.max(0, D - 8), this.before);
-        TrafficRoutes.sample(w, Math.min(w.length, D + 8), this.after);
-        const F = Math.atan2(this.after[1] - this.before[1], this.after[0] - this.before[0]);
-        const U = Math.cos(F);
-        const j = Math.sin(F);
+        TrafficRoutes.sample(route, Math.max(0, distance - 8), this.before);
+        TrafficRoutes.sample(route, Math.min(route.length, distance + 8), this.after);
+        // 前后采样点确定船头方向，尾流沿同一朝向偏移到船尾。
+        const heading = Math.atan2(this.after[1] - this.before[1], this.after[0] - this.before[0]);
+        const headingCos = Math.cos(heading);
+        const headingSin = Math.sin(heading);
         this.matrix.set(
-          U,
-          -j,
+          headingCos,
+          -headingSin,
           0,
           this.point[0],
-          j,
-          U,
+          headingSin,
+          headingCos,
           0,
           this.point[1],
           0,
@@ -130,28 +138,28 @@ class BoatSimulation {
           1,
         );
         this.mesh.setMatrixAt(this.count, this.matrix);
-        this.matrix.elements[12] += U * this.wakeOffset;
-        this.matrix.elements[13] += j * this.wakeOffset;
+        this.matrix.elements[12] += headingCos * this.wakeOffset;
+        this.matrix.elements[13] += headingSin * this.wakeOffset;
         this.matrix.elements[14] = 0.04;
         this.wake.setMatrixAt(this.count, this.matrix);
         this.count++;
       }
     }
-    for (const w of [this.mesh, this.wake]) {
-      w.count = this.count;
+    for (const mesh of [this.mesh, this.wake]) {
+      mesh.count = this.count;
       if (this.count) {
-        w.instanceMatrix.clearUpdateRanges();
-        w.instanceMatrix.addUpdateRange(0, this.count * 16);
-        w.instanceMatrix.needsUpdate = true;
+        mesh.instanceMatrix.clearUpdateRanges();
+        mesh.instanceMatrix.addUpdateRange(0, this.count * 16);
+        mesh.instanceMatrix.needsUpdate = true;
       }
     }
     return this.moving && this.candidates.length > 0 && !document.hidden;
   }
   dispose() {
-    for (const i of [this.mesh, this.wake]) {
-      i.geometry.dispose();
-      i.material.dispose();
-      i.dispose();
+    for (const mesh of [this.mesh, this.wake]) {
+      mesh.geometry.dispose();
+      mesh.material.dispose();
+      mesh.dispose();
     }
     this.group.clear();
   }

@@ -2,20 +2,20 @@
 import ClipperLib from 'clipper-lib';
 import { PolygonGrid } from './PolygonGrid.js';
 class SurfaceTopology {
-  constructor(A, C) {
-    const [Q, i, E, s] = A;
+  constructor(bounds, landscape) {
+    const [west, south, east, north] = bounds;
     this.tile = [
       [
         [
-          [Q, i],
-          [E, i],
-          [E, s],
-          [Q, s],
-          [Q, i],
+          [west, south],
+          [east, south],
+          [east, north],
+          [west, north],
+          [west, south],
         ],
       ],
     ];
-    this.landscape = C;
+    this.landscape = landscape;
     this.records = [];
     this.sources = {};
     this.roadMarkings = [];
@@ -27,133 +27,168 @@ class SurfaceTopology {
       unresolvedLevels: 0,
     };
   }
-  add(A, C, Q, i, E, s, w = 'area') {
-    const t = E.properties || {};
-    let y = t.min_height;
-    if (typeof y == 'string') {
-      const G = /^\s*(-?\d+(?:\.\d+)?)\s*(m|ft)?\s*$/.exec(y);
-      y = G ? Number(G[1]) * (G[2] === 'ft' ? 0.3048 : 1) : void 0;
+  add(polygons, kind, height, color, feature, priority, scope = 'area') {
+    const properties = feature.properties || {};
+    let minHeight = properties.min_height;
+    if (typeof minHeight == 'string') {
+      const heightMatch = /^\s*(-?\d+(?:\.\d+)?)\s*(m|ft)?\s*$/.exec(minHeight);
+      minHeight = heightMatch
+        ? Number(heightMatch[1]) * (heightMatch[2] === 'ft' ? 0.3048 : 1)
+        : void 0;
     }
-    const Y = Number.isFinite(y) ? y : 0;
-    const N =
-      t.man_made === 'pier'
+    const baseHeight = Number.isFinite(minHeight) ? minHeight : 0;
+    const planeType =
+      properties.man_made === 'pier'
         ? 'pier'
-        : t.location === 'roof'
+        : properties.location === 'roof'
           ? 'roof'
-          : t.bridge && t.bridge !== 'no'
+          : properties.bridge && properties.bridge !== 'no'
             ? 'bridge'
-            : t.tunnel && t.tunnel !== 'no'
+            : properties.tunnel && properties.tunnel !== 'no'
               ? 'tunnel'
               : 'ground';
-    const a = `${N}/${t.layer || 0}/${t.level || 0}/${Y}`;
-    let K = 0;
-    for (const G of A) {
-      for (let J = 0; J < G.length; J++) {
-        const S = G[J];
-        let U = 0;
-        for (let j = 1; j < S.length; j++) {
-          U += S[j - 1][0] * S[j][1] - S[j][0] * S[j - 1][1];
+    // 地面、屋顶、桥隧及 layer/level/最小高度共同定义平面，避免跨层误扣。
+    const planeKey = `${planeType}/${properties.layer || 0}/${properties.level || 0}/${baseHeight}`;
+    // 第一环是外轮廓，其余环是孔洞；用绝对面积相减，避免受输入绕序影响。
+    let area = 0;
+    for (const polygon of polygons) {
+      for (let ringIndex = 0; ringIndex < polygon.length; ringIndex++) {
+        const ring = polygon[ringIndex];
+        let signedDoubleArea = 0;
+        for (let pointIndex = 1; pointIndex < ring.length; pointIndex++) {
+          signedDoubleArea +=
+            ring[pointIndex - 1][0] * ring[pointIndex][1] -
+            ring[pointIndex][0] * ring[pointIndex - 1][1];
         }
-        K += (Math.abs(U) / 2) * (J ? -1 : 1);
+        area += (Math.abs(signedDoubleArea) / 2) * (ringIndex ? -1 : 1);
       }
     }
-    const e = {
-      polygons: A.length
-        ? this.landscape.combine(A, this.tile, ClipperLib.ClipType.ctIntersection, 1000000)
+    const record = {
+      polygons: polygons.length
+        ? this.landscape.combine(polygons, this.tile, ClipperLib.ClipType.ctIntersection, 1000000)
         : [],
-      kind: C,
-      height: Q + Y,
-      color: i,
-      priority: s,
-      plane: a,
-      scope: w,
-      area: K,
-      key: `${C}/${i}/${E.id}`,
+      kind: kind,
+      height: height + baseHeight,
+      color: color,
+      priority: priority,
+      plane: planeKey,
+      scope: scope,
+      area: area,
+      key: `${kind}/${color}/${feature.id}`,
       markings: [],
     };
-    this.records.push(e);
-    (this.sources[C] ||= []).push({
-      id: E.id,
+    this.records.push(record);
+    (this.sources[kind] ||= []).push({
+      id: feature.id,
       properties: {
-        ...t,
+        ...properties,
       },
-      plane: a,
+      plane: planeKey,
     });
     if (
-      (N !== 'ground' || (t.layer && t.layer !== '0') || (t.level && t.level !== '0')) &&
-      !Number.isFinite(y)
+      (planeType !== 'ground' ||
+        (properties.layer && properties.layer !== '0') ||
+        (properties.level && properties.level !== '0')) &&
+      !Number.isFinite(minHeight)
     ) {
       this.stats.unresolvedLevels++;
     }
-    return e;
+    return record;
   }
-  build(A) {
-    const C = new Map();
-    const Q = new Map();
+  build(landscape) {
+    const planeGrids = new Map();
+    const polygonOwners = new Map();
+    // 高优先级优先，同级按面积和稳定键排序；每个平面独立建立遮挡候选索引。
     this.records.sort(
-      (E, s) => s.priority - E.priority || E.area - s.area || E.key.localeCompare(s.key),
+      (leftRecord, rightRecord) =>
+        rightRecord.priority - leftRecord.priority ||
+        leftRecord.area - rightRecord.area ||
+        leftRecord.key.localeCompare(rightRecord.key),
     );
-    for (const [E, s] of this.records.entries()) {
-      s.rank = E;
-      if (!C.has(s.plane)) {
-        C.set(s.plane, []);
+    for (const [rank, record] of this.records.entries()) {
+      record.rank = rank;
+      if (!planeGrids.has(record.plane)) {
+        planeGrids.set(record.plane, []);
       }
-      for (const w of s.polygons) {
-        C.get(s.plane).push(w);
-        Q.set(w, s);
+      for (const polygon of record.polygons) {
+        planeGrids.get(record.plane).push(polygon);
+        polygonOwners.set(polygon, record);
       }
     }
-    for (const [E, s] of C) {
-      C.set(E, new PolygonGrid(s, 64));
+    for (const [planeKey, polygons] of planeGrids) {
+      planeGrids.set(planeKey, new PolygonGrid(polygons, 64));
     }
-    const i = new PolygonGrid(this.roadMarkings, 64);
-    for (const E of this.records) {
-      if (!E.polygons.length) {
+    const markingGrid = new PolygonGrid(this.roadMarkings, 64);
+    for (const record of this.records) {
+      if (!record.polygons.length) {
         continue;
       }
       this.stats.surfaces++;
-      const s = new Set();
-      for (const y of E.polygons) {
-        for (const Y of C.get(E.plane).query(y[0])) {
-          const N = Q.get(Y);
+      const occluders = new Set();
+      for (const polygon of record.polygons) {
+        for (const candidatePolygon of planeGrids.get(record.plane).query(polygon[0])) {
+          const candidateOwner = polygonOwners.get(candidatePolygon);
           if (!(
-            N.rank >= E.rank ||
-            (E.scope === 'area' && N.scope !== 'area') ||
-            (E.scope === 'linear' && N.scope === 'area' && (N.priority < 40 || N.kind === 'water'))
+            candidateOwner.rank >= record.rank ||
+            (record.scope === 'area' && candidateOwner.scope !== 'area') ||
+            (record.scope === 'linear' &&
+              candidateOwner.scope === 'area' &&
+              (candidateOwner.priority < 40 || candidateOwner.kind === 'water'))
           )) {
-            s.add(Y);
+            occluders.add(candidatePolygon);
           }
         }
       }
-      this.stats.candidates += s.size;
-      let w = E.polygons;
+      this.stats.candidates += occluders.size;
+      // 只扣除同平面中排名靠前且作用域兼容的面，随后将标线切为独立表面。
+      let visiblePolygons = record.polygons;
       if (
-        (s.size &&
-          ((w = A.combine(w, [...s], ClipperLib.ClipType.ctDifference, 1000000)),
+        (occluders.size &&
+          ((visiblePolygons = landscape.combine(
+            visiblePolygons,
+            [...occluders],
+            ClipperLib.ClipType.ctDifference,
+            1000000,
+          )),
           this.stats.differences++),
-        !w.length)
+        !visiblePolygons.length)
       ) {
         this.stats.hidden++;
         continue;
       }
-      let t = E.markings;
-      if (E.scope === 'linear' && E.kind === 'asphalt') {
-        const y = new Set();
-        for (const Y of w) {
-          for (const N of i.query(Y[0])) {
-            y.add(N);
+      let markings = record.markings;
+      if (record.scope === 'linear' && record.kind === 'asphalt') {
+        const markingCandidates = new Set();
+        for (const polygon of visiblePolygons) {
+          for (const marking of markingGrid.query(polygon[0])) {
+            markingCandidates.add(marking);
           }
         }
-        t = [...y];
+        markings = [...markingCandidates];
       }
-      if (t.length) {
-        const y = A.combine(t, w, ClipperLib.ClipType.ctIntersection, 1000000);
-        if (y.length) {
-          w = A.combine(w, y, ClipperLib.ClipType.ctDifference, 1000000);
-          A.surface(y, E.scope === 'linear' ? 'markingGround' : 'sportLines', E.height, '#eee9db');
+      if (markings.length) {
+        const clippedMarkings = landscape.combine(
+          markings,
+          visiblePolygons,
+          ClipperLib.ClipType.ctIntersection,
+          1000000,
+        );
+        if (clippedMarkings.length) {
+          visiblePolygons = landscape.combine(
+            visiblePolygons,
+            clippedMarkings,
+            ClipperLib.ClipType.ctDifference,
+            1000000,
+          );
+          landscape.surface(
+            clippedMarkings,
+            record.scope === 'linear' ? 'markingGround' : 'sportLines',
+            record.height,
+            '#eee9db',
+          );
         }
       }
-      A.surface(w, E.kind, E.height, E.color);
+      landscape.surface(visiblePolygons, record.kind, record.height, record.color);
     }
     return {
       surfaceSources: this.sources,

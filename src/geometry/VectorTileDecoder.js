@@ -3,39 +3,45 @@ import { VectorTile } from '@mapbox/vector-tile';
 import Pbf from 'pbf';
 class VectorTileDecoder {
   static vegetation(bytes, tileX, tileY, zoom, bounds) {
-    const s = new VectorTile(new Pbf(new Uint8Array(bytes)));
-    const w = [];
-    const t = s.layers.landcover;
-    if (!t) {
-      return w;
+    const tile = new VectorTile(new Pbf(new Uint8Array(bytes)));
+    const features = [];
+    const landcoverLayer = tile.layers.landcover;
+    if (!landcoverLayer) {
+      return features;
     }
-    for (let y = 0; y < t.length; y++) {
-      const Y = t.feature(y);
-      const N = Y.properties;
-      if (Y.type !== 3 || !['grass', 'wood'].includes(N.class)) {
+    for (let featureIndex = 0; featureIndex < landcoverLayer.length; featureIndex++) {
+      const tileFeature = landcoverLayer.feature(featureIndex);
+      const properties = tileFeature.properties;
+      if (tileFeature.type !== 3 || !['grass', 'wood'].includes(properties.class)) {
         continue;
       }
-      const a = Y.toGeoJSON(tileX, tileY, zoom);
-      const K = a.geometry.type === 'Polygon' ? [a.geometry.coordinates] : a.geometry.coordinates;
-      const e = [1 / 0, 1 / 0, -1 / 0, -1 / 0];
-      for (const G of K) {
-        for (const J of G[0]) {
-          e[0] = Math.min(e[0], J[0]);
-          e[1] = Math.min(e[1], J[1]);
-          e[2] = Math.max(e[2], J[0]);
-          e[3] = Math.max(e[3], J[1]);
+      const feature = tileFeature.toGeoJSON(tileX, tileY, zoom);
+      const polygons =
+        feature.geometry.type === 'Polygon'
+          ? [feature.geometry.coordinates]
+          : feature.geometry.coordinates;
+      const featureBounds = [1 / 0, 1 / 0, -1 / 0, -1 / 0];
+      for (const polygon of polygons) {
+        for (const point of polygon[0]) {
+          featureBounds[0] = Math.min(featureBounds[0], point[0]);
+          featureBounds[1] = Math.min(featureBounds[1], point[1]);
+          featureBounds[2] = Math.max(featureBounds[2], point[0]);
+          featureBounds[3] = Math.max(featureBounds[3], point[1]);
         }
       }
       if (!(
         bounds &&
-        (e[2] < bounds.west || e[0] > bounds.east || e[3] < bounds.south || e[1] > bounds.north)
+        (featureBounds[2] < bounds.west ||
+          featureBounds[0] > bounds.east ||
+          featureBounds[3] < bounds.south ||
+          featureBounds[1] > bounds.north)
       )) {
-        a.bbox = e;
-        a.id = `landcover/${zoom}/${tileX}/${tileY}/${Y.id ?? y}`;
-        a.properties = {
-          ...N,
+        feature.bbox = featureBounds;
+        feature.id = `landcover/${zoom}/${tileX}/${tileY}/${tileFeature.id ?? featureIndex}`;
+        feature.properties = {
+          ...properties,
           source: 'OpenFreeMap',
-          ...(N.class === 'wood'
+          ...(properties.class === 'wood'
             ? {
                 natural: 'wood',
               }
@@ -43,30 +49,31 @@ class VectorTileDecoder {
                 landuse: 'grass',
               }),
         };
-        if (N.subclass === 'park') {
-          a.properties.leisure = 'park';
+        if (properties.subclass === 'park') {
+          feature.properties.leisure = 'park';
         }
-        if (N.subclass === 'garden') {
-          a.properties.leisure = 'garden';
+        if (properties.subclass === 'garden') {
+          feature.properties.leisure = 'garden';
         }
-        w.push(a);
+        features.push(feature);
       }
     }
-    return w;
+    return features;
   }
-  static bounds(x, y, zoom = 16) {
-    const i = 2 ** zoom;
+  static bounds(tileX, tileY, zoom = 16) {
+    const tileCount = 2 ** zoom;
     return {
-      west: (x / i) * 360 - 180,
-      east: ((x + 1) / i) * 360 - 180,
-      north: (Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / i))) * 180) / Math.PI,
-      south: (Math.atan(Math.sinh(Math.PI * (1 - (2 * (y + 1)) / i))) * 180) / Math.PI,
+      west: (tileX / tileCount) * 360 - 180,
+      east: ((tileX + 1) / tileCount) * 360 - 180,
+      north: (Math.atan(Math.sinh(Math.PI * (1 - (2 * tileY) / tileCount))) * 180) / Math.PI,
+      south: (Math.atan(Math.sinh(Math.PI * (1 - (2 * (tileY + 1)) / tileCount))) * 180) / Math.PI,
     };
   }
   static decode(bytes, tileX, tileY, zoom = 16) {
-    const E = new VectorTile(new Pbf(new Uint8Array(bytes)));
-    const s = [];
-    const w = {
+    const tile = new VectorTile(new Pbf(new Uint8Array(bytes)));
+    const features = [];
+    // 将 Streets GL 的压缩属性名映射回下游几何生成器使用的 OSM 标签名。
+    const propertyMapping = {
       name: 'name',
       height: 'height',
       minHeight: 'min_height',
@@ -101,7 +108,8 @@ class VectorTileDecoder {
       sidewalkLeftWidth: 'sidewalk:left:width',
       sidewalkRightWidth: 'sidewalk:right:width',
     };
-    const t = {
+    // 类型补充默认 OSM 标签，随后保留源数据中的明确属性并补齐专用字段。
+    const typeTags = {
       tree: {
         natural: 'tree',
       },
@@ -211,12 +219,14 @@ class VectorTileDecoder {
         historic: 'memorial',
       },
     };
-    for (const [y, Y] of Object.entries(E.layers)) {
-      for (let N = 0; N < Y.length; N++) {
-        const a = Y.feature(N);
-        const K = a.properties;
-        const e =
-          ['tree', 'tree_row', 'wood', 'scrub', 'grassland', 'heath'].includes(K.natural) ||
+    for (const [layerName, layer] of Object.entries(tile.layers)) {
+      for (let featureIndex = 0; featureIndex < layer.length; featureIndex++) {
+        const tileFeature = layer.feature(featureIndex);
+        const properties = tileFeature.properties;
+        const isVegetation =
+          ['tree', 'tree_row', 'wood', 'scrub', 'grassland', 'heath'].includes(
+            properties.natural,
+          ) ||
           [
             'forest',
             'grass',
@@ -225,34 +235,35 @@ class VectorTileDecoder {
             'orchard',
             'vineyard',
             'flowerbed',
-          ].includes(K.landuse) ||
-          ['park', 'garden'].includes(K.leisure);
-        const G = K.building || K['building:part'];
-        const J = K.waterway || ['ferry', 'boat'].includes(K.route);
-        const S =
-          ['pitch', 'track', 'playground'].includes(K.leisure) ||
-          ['construction', 'brownfield', 'farmland'].includes(K.landuse) ||
-          K.amenity === 'parking' ||
-          K.aeroway === 'helipad' ||
-          K.man_made === 'pier' ||
-          (K.highway && K.area === 'yes');
+          ].includes(properties.landuse) ||
+          ['park', 'garden'].includes(properties.leisure);
+        const isBuilding = properties.building || properties['building:part'];
+        const isWaterRoute = properties.waterway || ['ferry', 'boat'].includes(properties.route);
+        const isSurface =
+          ['pitch', 'track', 'playground'].includes(properties.leisure) ||
+          ['construction', 'brownfield', 'farmland'].includes(properties.landuse) ||
+          properties.amenity === 'parking' ||
+          properties.aeroway === 'helipad' ||
+          properties.man_made === 'pier' ||
+          (properties.highway && properties.area === 'yes');
         if (
-          !G &&
-          !e &&
-          !J &&
-          !S &&
-          !t[K.type] &&
-          !['building', 'path', 'waterway', 'railway'].includes(K.type)
+          !isBuilding &&
+          !isVegetation &&
+          !isWaterRoute &&
+          !isSurface &&
+          !typeTags[properties.type] &&
+          !['building', 'path', 'waterway', 'railway'].includes(properties.type)
         ) {
           continue;
         }
-        const U = a.toGeoJSON(tileX, tileY, zoom);
-        const j = {
-          ...t[K.type],
+        // 由瓦片坐标还原经纬度；后续统一输出 GeoJSON 要素并拆开多线几何。
+        const feature = tileFeature.toGeoJSON(tileX, tileY, zoom);
+        const tags = {
+          ...typeTags[properties.type],
         };
-        for (const [n, F] of Object.entries(K)) {
+        for (const [propertyName, propertyValue] of Object.entries(properties)) {
           if (
-            n.includes(':') ||
+            propertyName.includes(':') ||
             [
               'building',
               'colour',
@@ -279,71 +290,74 @@ class VectorTileDecoder {
               'level',
               'bridge',
               'location',
-            ].includes(n)
+            ].includes(propertyName)
           ) {
-            j[n] = F;
+            tags[propertyName] = propertyValue;
           }
         }
-        for (const [n, F] of Object.entries(w)) {
-          if (K[n] !== void 0) {
-            j[F] = K[n];
+        for (const [sourceProperty, targetProperty] of Object.entries(propertyMapping)) {
+          if (properties[sourceProperty] !== void 0) {
+            tags[targetProperty] = properties[sourceProperty];
           }
         }
         if (
-          (K.type === 'building' &&
-            ((j[K.isPart ? 'building:part' : 'building'] ??= K.buildingType || 'yes'),
-            K.color !== void 0 &&
-              (j['building:colour'] ??=
-                typeof K.color == 'number'
-                  ? '#' + (K.color & 16777215).toString(16).padStart(6, '0')
-                  : K.color),
-            K.roofColor !== void 0 &&
-              (j['roof:colour'] ??=
-                typeof K.roofColor == 'number'
-                  ? '#' + (K.roofColor & 16777215).toString(16).padStart(6, '0')
-                  : K.roofColor)),
-          K.type === 'path' &&
-            ((j.highway ??= K.pathType),
-            a.type === 3 && (j.area = 'yes'),
-            K.oneway !== void 0 && (j.oneway = K.oneway ? 'yes' : 'no'),
-            K.sidewalkSide !== void 0 && (j.sidewalk = ['left', 'right', 'both'][K.sidewalkSide]),
-            K.laneMarkings !== void 0 && (j.lane_markings = K.laneMarkings ? 'yes' : 'no')),
-          K.type === 'waterway' && (j.waterway ??= K.waterwayType),
-          K.type === 'railway')
+          (properties.type === 'building' &&
+            ((tags[properties.isPart ? 'building:part' : 'building'] ??=
+              properties.buildingType || 'yes'),
+            properties.color !== void 0 &&
+              (tags['building:colour'] ??=
+                typeof properties.color == 'number'
+                  ? '#' + (properties.color & 16777215).toString(16).padStart(6, '0')
+                  : properties.color),
+            properties.roofColor !== void 0 &&
+              (tags['roof:colour'] ??=
+                typeof properties.roofColor == 'number'
+                  ? '#' + (properties.roofColor & 16777215).toString(16).padStart(6, '0')
+                  : properties.roofColor)),
+          properties.type === 'path' &&
+            ((tags.highway ??= properties.pathType),
+            tileFeature.type === 3 && (tags.area = 'yes'),
+            properties.oneway !== void 0 && (tags.oneway = properties.oneway ? 'yes' : 'no'),
+            properties.sidewalkSide !== void 0 &&
+              (tags.sidewalk = ['left', 'right', 'both'][properties.sidewalkSide]),
+            properties.laneMarkings !== void 0 &&
+              (tags.lane_markings = properties.laneMarkings ? 'yes' : 'no')),
+          properties.type === 'waterway' && (tags.waterway ??= properties.waterwayType),
+          properties.type === 'railway')
         ) {
-          j.railway = K.railwayType;
-          const n = K.gauge
+          tags.railway = properties.railwayType;
+          const gauges = properties.gauge
             ?.split(';')
             .map(Number)
-            .filter((F) => F > 0);
-          if (n?.length) {
-            j.gauge = Math.max(...n);
+            .filter((gauge) => gauge > 0);
+          if (gauges?.length) {
+            tags.gauge = Math.max(...gauges);
           }
         }
         if (
-          ((U.id =
-            K.osmId === void 0
-              ? `${zoom}/${tileX}/${tileY}/${y}/${N}`
-              : `${['node', 'way', 'relation'][K.osmType]}/${K.osmId}`),
-          (U.properties = j),
-          U.geometry.type === 'MultiLineString')
+          ((feature.id =
+            properties.osmId === void 0
+              ? `${zoom}/${tileX}/${tileY}/${layerName}/${featureIndex}`
+              : `${['node', 'way', 'relation'][properties.osmType]}/${properties.osmId}`),
+          (feature.properties = tags),
+          feature.geometry.type === 'MultiLineString')
         ) {
-          for (let n = 0; n < U.geometry.coordinates.length; n++) {
-            s.push({
-              ...U,
-              id: `${U.id}/${n}`,
+          for (let lineIndex = 0; lineIndex < feature.geometry.coordinates.length; lineIndex++) {
+            features.push({
+              ...feature,
+              id: `${feature.id}/${lineIndex}`,
               geometry: {
                 type: 'LineString',
-                coordinates: U.geometry.coordinates[n],
+                coordinates: feature.geometry.coordinates[lineIndex],
               },
             });
           }
         } else {
-          s.push(U);
+          features.push(feature);
         }
       }
     }
-    return s;
+    return features;
   }
 }
 export { VectorTileDecoder };

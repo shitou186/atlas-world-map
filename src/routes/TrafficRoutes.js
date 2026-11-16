@@ -1,8 +1,9 @@
 // Reconstructed from the existing Atlas page; see SOURCES.md for provenance.
 class TrafficRoutes {
   static build(roads) {
-    const o = [];
-    const p = {
+    // 根据道路通行限制、单行方向和驾驶侧，生成可供车辆行驶的车道路线。
+    const routes = [];
+    const spacingByHighway = {
       motorway: 55,
       motorway_link: 65,
       trunk: 55,
@@ -18,136 +19,173 @@ class TrafficRoutes {
       unclassified: 100,
       service: 180,
     };
-    for (const x of roads) {
-      const T = x.tags;
+    for (const road of roads) {
+      const tags = road.tags;
       if (
-        !p[T.highway] ||
-        x.path ||
-        x.width < 2.7 ||
-        T.area === 'yes' ||
-        ['yes', 'building_passage'].includes(T.tunnel) ||
-        T.covered === 'yes'
+        !spacingByHighway[tags.highway] ||
+        road.path ||
+        road.width < 2.7 ||
+        tags.area === 'yes' ||
+        ['yes', 'building_passage'].includes(tags.tunnel) ||
+        tags.covered === 'yes'
       ) {
         continue;
       }
-      const w = T.motorcar ?? T.motor_vehicle ?? T.vehicle ?? T.access;
+      const access = tags.motorcar ?? tags.motor_vehicle ?? tags.vehicle ?? tags.access;
       if (
-        ['no', 'private', 'agricultural', 'forestry', 'delivery'].includes(w) ||
-        ['parking_aisle', 'driveway', 'emergency_access'].includes(T.service) ||
-        ['reversible', 'alternating'].includes(T.oneway)
+        ['no', 'private', 'agricultural', 'forestry', 'delivery'].includes(access) ||
+        ['parking_aisle', 'driveway', 'emergency_access'].includes(tags.service) ||
+        ['reversible', 'alternating'].includes(tags.oneway)
       ) {
         continue;
       }
-      let l = 0;
-      for (const N of x.id) {
-        l = (Math.imul(l, 31) + N.charCodeAt(0)) | 0;
+      let seed = 0;
+      for (const idCharacter of road.id) {
+        seed = (Math.imul(seed, 31) + idCharacter.charCodeAt(0)) | 0;
       }
-      const D =
-        T.oneway === '-1'
+      const onewayDirection =
+        tags.oneway === '-1'
           ? -1
-          : ['yes', '1', 'true'].includes(T.oneway) ||
-              (T.oneway !== 'no' && (T.junction === 'roundabout' || T.highway === 'motorway'))
+          : ['yes', '1', 'true'].includes(tags.oneway) ||
+              (tags.oneway !== 'no' &&
+                (tags.junction === 'roundabout' || tags.highway === 'motorway'))
             ? 1
             : 0;
-      if (!D && x.width < 5) {
+      if (!onewayDirection && road.width < 5) {
         continue;
       }
-      const F = D ? [D] : [1, -1];
-      const U = T.driving_side === 'left';
-      const j = /^\d+(?:\.\d+)?(?:\s*mph)?$/.test(T.maxspeed || '')
-        ? Number.parseFloat(T.maxspeed) * (/mph$/.test(T.maxspeed) ? 1.609344 : 1)
+      const directions = onewayDirection ? [onewayDirection] : [1, -1];
+      const drivesOnLeft = tags.driving_side === 'left';
+      const maxSpeedKph = /^\d+(?:\.\d+)?(?:\s*mph)?$/.test(tags.maxspeed || '')
+        ? Number.parseFloat(tags.maxspeed) * (/mph$/.test(tags.maxspeed) ? 1.609344 : 1)
         : 0;
-      const q =
+      const speed =
         Math.min(
           80,
           Math.max(
             8,
-            j ||
-              (T.highway.startsWith('motorway')
+            maxSpeedKph ||
+              (tags.highway.startsWith('motorway')
                 ? 70
-                : T.highway === 'service'
+                : tags.highway === 'service'
                   ? 15
-                  : T.highway === 'residential'
+                  : tags.highway === 'residential'
                     ? 25
                     : 40),
           ),
         ) / 3.6;
-      for (const N of F) {
-        const J = [];
-        const se = x.width / Math.max(x.lanes || (D ? 1 : 2), D ? 1 : 2);
-        const Z = D && x.lanes <= 1 ? 0 : (U ? 1 : -1) * N * Math.max(0, x.width / 2 - se / 2);
-        for (let ce = 0; ce < x.points.length; ce++) {
-          const pe = x.points[ce];
-          const de = x.points[Math.max(0, ce - 1)];
-          const B = x.points[Math.min(x.points.length - 1, ce + 1)];
-          const ie = Math.hypot(pe[0] - de[0], pe[1] - de[1]);
-          const Y = Math.hypot(B[0] - pe[0], B[1] - pe[1]);
-          const K = ie ? -(pe[1] - de[1]) / ie : -(B[1] - pe[1]) / Y;
-          const ae = ie ? (pe[0] - de[0]) / ie : (B[0] - pe[0]) / Y;
-          const we = Y ? -(B[1] - pe[1]) / Y : K;
-          const Re = Y ? (B[0] - pe[0]) / Y : ae;
-          const Se = Math.max(0.5, 1 + K * we + ae * Re);
-          J.push([
-            pe[0] + ((K + we) / Se) * Z,
-            pe[1] + ((ae + Re) / Se) * Z,
-            (pe[2] ?? x.z) + 0.025,
+      for (const direction of directions) {
+        const points = [];
+        const laneWidth =
+          road.width / Math.max(road.lanes || (onewayDirection ? 1 : 2), onewayDirection ? 1 : 2);
+        const laneOffset =
+          onewayDirection && road.lanes <= 1
+            ? 0
+            : (drivesOnLeft ? 1 : -1) * direction * Math.max(0, road.width / 2 - laneWidth / 2);
+        for (let pointIndex = 0; pointIndex < road.points.length; pointIndex++) {
+          const point = road.points[pointIndex];
+          const previousPoint = road.points[Math.max(0, pointIndex - 1)];
+          const nextPoint = road.points[Math.min(road.points.length - 1, pointIndex + 1)];
+          const previousLength = Math.hypot(
+            point[0] - previousPoint[0],
+            point[1] - previousPoint[1],
+          );
+          const nextLength = Math.hypot(nextPoint[0] - point[0], nextPoint[1] - point[1]);
+          const previousNormalX = previousLength
+            ? -(point[1] - previousPoint[1]) / previousLength
+            : -(nextPoint[1] - point[1]) / nextLength;
+          const previousNormalY = previousLength
+            ? (point[0] - previousPoint[0]) / previousLength
+            : (nextPoint[0] - point[0]) / nextLength;
+          const nextNormalX = nextLength
+            ? -(nextPoint[1] - point[1]) / nextLength
+            : previousNormalX;
+          const nextNormalY = nextLength ? (nextPoint[0] - point[0]) / nextLength : previousNormalY;
+          // 相邻线段的法线合成斜接偏移，保持弯道处的车道连续。
+          const miterDenominator = Math.max(
+            0.5,
+            1 + previousNormalX * nextNormalX + previousNormalY * nextNormalY,
+          );
+          points.push([
+            point[0] + ((previousNormalX + nextNormalX) / miterDenominator) * laneOffset,
+            point[1] + ((previousNormalY + nextNormalY) / miterDenominator) * laneOffset,
+            (point[2] ?? road.z) + 0.025,
           ]);
         }
-        if (N < 0) {
-          J.reverse();
+        if (direction < 0) {
+          points.reverse();
         }
-        const G = new Float32Array(J.length);
-        const re = [1 / 0, 1 / 0, -1 / 0, -1 / 0];
-        for (let ce = 0; ce < J.length; ce++) {
-          const pe = J[ce];
-          re[0] = Math.min(re[0], pe[0]);
-          re[1] = Math.min(re[1], pe[1]);
-          re[2] = Math.max(re[2], pe[0]);
-          re[3] = Math.max(re[3], pe[1]);
-          if (ce) {
-            G[ce] = G[ce - 1] + Math.hypot(pe[0] - J[ce - 1][0], pe[1] - J[ce - 1][1]);
+        const distances = new Float32Array(points.length);
+        const bounds = [1 / 0, 1 / 0, -1 / 0, -1 / 0];
+        for (let pointIndex = 0; pointIndex < points.length; pointIndex++) {
+          const point = points[pointIndex];
+          bounds[0] = Math.min(bounds[0], point[0]);
+          bounds[1] = Math.min(bounds[1], point[1]);
+          bounds[2] = Math.max(bounds[2], point[0]);
+          bounds[3] = Math.max(bounds[3], point[1]);
+          if (pointIndex) {
+            distances[pointIndex] =
+              distances[pointIndex - 1] +
+              Math.hypot(
+                point[0] - points[pointIndex - 1][0],
+                point[1] - points[pointIndex - 1][1],
+              );
           }
         }
-        const ue = G.at(-1);
-        if (!(ue < 24)) {
-          o.push({
-            id: `${x.id}/${N}`,
-            points: new Float32Array(J.flat()),
-            distances: G,
-            length: ue,
-            speed: q,
-            seed: (l + N * 97) >>> 0,
-            count: Math.min(64, Math.max(1, Math.floor(ue / p[T.highway]))),
-            bounds: re,
+        const routeLength = distances.at(-1);
+        if (!(routeLength < 24)) {
+          routes.push({
+            id: `${road.id}/${direction}`,
+            points: new Float32Array(points.flat()),
+            distances: distances,
+            length: routeLength,
+            speed: speed,
+            seed: (seed + direction * 97) >>> 0,
+            count: Math.min(
+              64,
+              Math.max(1, Math.floor(routeLength / spacingByHighway[tags.highway])),
+            ),
+            bounds: bounds,
           });
         }
       }
     }
-    return o;
+    return routes;
   }
   static sample(route, distance, output) {
-    let x = 0;
-    let T = route.distances.length - 1;
-    for (; T - x > 1;) {
-      const F = (x + T) >>> 1;
-      if (route.distances[F] <= distance) {
-        x = F;
+    // 在累计距离中二分定位线段，再插值得到位置与航向；调用方复用输出数组。
+    let lowerIndex = 0;
+    let upperIndex = route.distances.length - 1;
+    for (; upperIndex - lowerIndex > 1;) {
+      const middleIndex = (lowerIndex + upperIndex) >>> 1;
+      if (route.distances[middleIndex] <= distance) {
+        lowerIndex = middleIndex;
       } else {
-        T = F;
+        upperIndex = middleIndex;
       }
     }
-    const w = x * 3;
-    const l = T * 3;
-    const D = Math.max(
+    const lowerOffset = lowerIndex * 3;
+    const upperOffset = upperIndex * 3;
+    const fraction = Math.max(
       0,
-      Math.min(1, (distance - route.distances[x]) / (route.distances[T] - route.distances[x])),
+      Math.min(
+        1,
+        (distance - route.distances[lowerIndex]) /
+          (route.distances[upperIndex] - route.distances[lowerIndex]),
+      ),
     );
-    output[0] = route.points[w] + (route.points[l] - route.points[w]) * D;
-    output[1] = route.points[w + 1] + (route.points[l + 1] - route.points[w + 1]) * D;
-    output[2] = route.points[w + 2] + (route.points[l + 2] - route.points[w + 2]) * D;
+    output[0] =
+      route.points[lowerOffset] +
+      (route.points[upperOffset] - route.points[lowerOffset]) * fraction;
+    output[1] =
+      route.points[lowerOffset + 1] +
+      (route.points[upperOffset + 1] - route.points[lowerOffset + 1]) * fraction;
+    output[2] =
+      route.points[lowerOffset + 2] +
+      (route.points[upperOffset + 2] - route.points[lowerOffset + 2]) * fraction;
     output[3] = Math.atan2(
-      route.points[l + 1] - route.points[w + 1],
-      route.points[l] - route.points[w],
+      route.points[upperOffset + 1] - route.points[lowerOffset + 1],
+      route.points[upperOffset] - route.points[lowerOffset],
     );
   }
 }

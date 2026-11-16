@@ -1,33 +1,37 @@
 // Reconstructed from the existing Atlas page; see SOURCES.md for provenance.
 class InteractionMetrics {
-  constructor(e, r) {
-    this.map = e;
-    this.scene = r;
+  constructor(map, scene) {
+    this.map = map;
+    this.scene = scene;
     this.samples = [];
     this.tasks = [];
     this.startup = {
       mapCreatedMs: performance.now(),
     };
-    for (const s of ['style.load', 'load']) {
-      e.once(s, () => {
-        this.startup[s] = performance.now();
+    for (const eventName of ['style.load', 'load']) {
+      map.once(eventName, () => {
+        this.startup[eventName] = performance.now();
         this.startup.resources = performance
           .getEntriesByType('resource')
-          .filter((t) => !t.name.includes('/src/') && !t.name.includes('/node_modules/'))
-          .map((t) => ({
-            url: t.name,
-            startMs: t.startTime,
-            durationMs: t.duration,
-            bytes: t.transferSize,
+          .filter(
+            (resourceEntry) =>
+              !resourceEntry.name.includes('/src/') &&
+              !resourceEntry.name.includes('/node_modules/'),
+          )
+          .map((resourceEntry) => ({
+            url: resourceEntry.name,
+            startMs: resourceEntry.startTime,
+            durationMs: resourceEntry.duration,
+            bytes: resourceEntry.transferSize,
           }));
-        e.getCanvas().dataset.startupMetrics = JSON.stringify(this.startup);
+        map.getCanvas().dataset.startupMetrics = JSON.stringify(this.startup);
       });
     }
     this.output = document.createElement('output');
     this.output.id = 'interaction-metrics';
     this.output.hidden = !0;
     document.body.append(this.output);
-    e.getCanvas().addEventListener(
+    map.getCanvas().addEventListener(
       'mousedown',
       () => {
         this.pressed = !0;
@@ -43,36 +47,36 @@ class InteractionMetrics {
       },
       !0,
     );
-    for (const s of ['movestart', 'moveend', 'dragstart', 'dragend', 'resize', 'click']) {
-      e.on(s, (t) => {
-        if (s === 'movestart') {
+    for (const eventName of ['movestart', 'moveend', 'dragstart', 'dragend', 'resize', 'click']) {
+      map.on(eventName, (event) => {
+        if (eventName === 'movestart') {
           this.begin();
         }
-        this.record(s, {
-          original: t.originalEvent?.type,
+        this.record(eventName, {
+          original: event.originalEvent?.type,
         });
-        if (s === 'moveend') {
+        if (eventName === 'moveend') {
           this.finish();
         }
       });
     }
-    e.on('render', () => {
+    map.on('render', () => {
       if (!this.current || this.current.frames.length >= 4096) {
         return;
       }
-      const s = performance.now();
+      const frameTime = performance.now();
       if (this.lastFrame) {
-        this.current.frames.push(s - this.lastFrame);
+        this.current.frames.push(frameTime - this.lastFrame);
       }
-      this.lastFrame = s;
-      this.current.sceneCpu.push(r.lastRenderCpuMs || 0);
+      this.lastFrame = frameTime;
+      this.current.sceneCpu.push(scene.lastRenderCpuMs || 0);
     });
     if (PerformanceObserver.supportedEntryTypes.includes('longtask')) {
-      this.observer = new PerformanceObserver((s) => {
-        for (const t of s.getEntries()) {
+      this.observer = new PerformanceObserver((observationList) => {
+        for (const taskEntry of observationList.getEntries()) {
           this.tasks.push({
-            start: t.startTime,
-            duration: t.duration,
+            start: taskEntry.startTime,
+            duration: taskEntry.duration,
           });
         }
         this.tasks = this.tasks.slice(-80);
@@ -97,37 +101,42 @@ class InteractionMetrics {
       };
     }
   }
-  record(e, r = {}) {
+  record(eventName, details = {}) {
     if (this.current && this.current.events.length < 512) {
       this.current.events.push({
-        name: e,
+        name: eventName,
         time: performance.now() - this.current.start,
-        ...r,
+        ...details,
       });
     }
   }
+  // 延迟到交互停止后汇总，持续按压或地图仍在移动时保留当前采样。
   finish() {
     clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       if (!this.current || this.pressed || this.map.isMoving()) {
         return;
       }
-      const e = this.current;
+      const sample = this.current;
       this.current = null;
-      const r = e.frames.slice().sort((t, i) => t - i);
-      const s = e.sceneCpu.slice().sort((t, i) => t - i);
-      e.summary = {
-        frameCount: r.length,
-        p50: r[Math.floor(r.length * 0.5)] || 0,
-        p95: r[Math.floor(r.length * 0.95)] || 0,
-        max: r.at(-1) || 0,
-        over50: r.filter((t) => t > 50).length,
-        cpuP95: s[Math.floor(s.length * 0.95)] || 0,
-        shadows: this.scene.shadowCount - e.shadows,
+      const sortedFrameTimes = sample.frames
+        .slice()
+        .sort((firstFrameTime, secondFrameTime) => firstFrameTime - secondFrameTime);
+      const sortedCpuTimes = sample.sceneCpu
+        .slice()
+        .sort((firstCpuTime, secondCpuTime) => firstCpuTime - secondCpuTime);
+      sample.summary = {
+        frameCount: sortedFrameTimes.length,
+        p50: sortedFrameTimes[Math.floor(sortedFrameTimes.length * 0.5)] || 0,
+        p95: sortedFrameTimes[Math.floor(sortedFrameTimes.length * 0.95)] || 0,
+        max: sortedFrameTimes.at(-1) || 0,
+        over50: sortedFrameTimes.filter((frameTime) => frameTime > 50).length,
+        cpuP95: sortedCpuTimes[Math.floor(sortedCpuTimes.length * 0.95)] || 0,
+        shadows: this.scene.shadowCount - sample.shadows,
       };
-      e.endCenter = this.map.getCenter().toArray();
-      e.longTasks = this.tasks.filter((t) => t.start >= e.start);
-      this.samples.push(e);
+      sample.endCenter = this.map.getCenter().toArray();
+      sample.longTasks = this.tasks.filter((taskEntry) => taskEntry.start >= sample.start);
+      this.samples.push(sample);
       this.samples = this.samples.slice(-12);
       this.output.textContent = JSON.stringify({
         width: this.map.getCanvas().width,

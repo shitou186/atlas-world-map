@@ -8,13 +8,15 @@ import {
   DoubleSide,
 } from 'three';
 class WaterMaterial {
-  constructor(i, o) {
-    const p = new TextureLoader();
-    this.bump = p.load('/textures/WaterBumpAndReflection.png', () => i.triggerRepaint());
+  constructor(map, cameraPosition) {
+    const textureLoader = new TextureLoader();
+    this.bump = textureLoader.load('/textures/WaterBumpAndReflection.png', () =>
+      map.triggerRepaint(),
+    );
     this.bump.wrapS = this.bump.wrapT = RepeatWrapping;
     this.bump.generateMipmaps = false;
     this.bump.minFilter = this.bump.magFilter = LinearFilter;
-    this.sky = p.load('/textures/GradientSky.png', () => i.triggerRepaint());
+    this.sky = textureLoader.load('/textures/GradientSky.png', () => map.triggerRepaint());
     this.sky.minFilter = this.sky.magFilter = LinearFilter;
     this.sky.generateMipmaps = false;
     this.uniforms = {
@@ -31,28 +33,29 @@ class WaterMaterial {
         value: new Vector3(0, 0, 1),
       },
       waterEye: {
-        value: o,
+        value: cameraPosition,
       },
     };
   }
   create() {
-    const i = new MeshLambertMaterial({
+    const material = new MeshLambertMaterial({
       side: DoubleSide,
       polygonOffset: true,
       polygonOffsetFactor: 0,
       polygonOffsetUnits: -2,
     });
-    i.onBeforeCompile = (o) => {
-      Object.assign(o.uniforms, this.uniforms);
-      o.vertexShader =
+    // 共享水面时间、太阳与观察位置，注入波纹法线和天空反射着色。
+    material.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, this.uniforms);
+      shader.vertexShader =
         `varying vec3 waterPoint;
 ` +
-        o.vertexShader.replace(
+        shader.vertexShader.replace(
           '#include <begin_vertex>',
           `#include <begin_vertex>
 waterPoint = (modelMatrix * vec4(position, 1.0)).xyz;`,
         );
-      o.fragmentShader =
+      shader.fragmentShader =
         `
         uniform sampler2D waterBump;
         uniform sampler2D waterSky;
@@ -60,13 +63,13 @@ waterPoint = (modelMatrix * vec4(position, 1.0)).xyz;`,
         uniform vec3 waterSun;
         uniform vec3 waterEye;
         varying vec3 waterPoint;
-      ` + o.fragmentShader;
-      o.fragmentShader = o.fragmentShader.replace(
+      ` + shader.fragmentShader;
+      shader.fragmentShader = shader.fragmentShader.replace(
         '#include <shadowmap_pars_fragment>',
         `#include <shadowmap_pars_fragment>
 #include <shadowmask_pars_fragment>`,
       );
-      o.fragmentShader = o.fragmentShader.replace(
+      shader.fragmentShader = shader.fragmentShader.replace(
         '#include <color_fragment>',
         `
         vec3 eye = normalize(waterEye - waterPoint);
@@ -83,13 +86,13 @@ waterPoint = (modelMatrix * vec4(position, 1.0)).xyz;`,
         diffuseColor.rgb = mix(color / 12.92, pow((color + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), color));
       `,
       );
-      o.fragmentShader = o.fragmentShader.replace(
+      shader.fragmentShader = shader.fragmentShader.replace(
         'vec3 outgoingLight = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse + totalEmissiveRadiance;',
         'vec3 outgoingLight = diffuseColor.rgb * mix(0.73, 1.0, getShadowMask());',
       );
     };
-    i.customProgramCacheKey = () => 'water-bump-sky';
-    return i;
+    material.customProgramCacheKey = () => 'water-bump-sky';
+    return material;
   }
   dispose() {
     this.bump.dispose();

@@ -2,40 +2,54 @@
 class MapPresentation {
   constructor(map, layers) {
     this.map = map;
-    this.layers = layers.filter((p) => p.type !== 'background');
+    this.layers = layers.filter((layer) => layer.type !== 'background');
     this.detailed = false;
     this.labels = true;
     this.vector = true;
     this.three = true;
   }
   update(force = false) {
-    const o = this.three && this.map.getZoom() > 15;
-    if (!(!force && o === this.detailed)) {
-      this.detailed = o;
-      for (const p of this.layers) {
-        const x =
+    // 缩放阈值和三维开关共同决定底图样式；强制刷新用于图层开关变化。
+    const detailed = this.three && this.map.getZoom() > 15;
+    if (!(!force && detailed === this.detailed)) {
+      this.detailed = detailed;
+      for (const layer of this.layers) {
+        const visible =
           this.vector &&
-          (p.type === 'symbol'
+          (layer.type === 'symbol'
             ? this.labels
-            : !o || (['fill', 'line'].includes(p.type) && p['source-layer'] !== 'building'));
+            : !detailed ||
+              (['fill', 'line'].includes(layer.type) && layer['source-layer'] !== 'building'));
         this.map.setLayoutProperty(
-          p.id,
+          layer.id,
           'visibility',
-          x ? p.layout?.visibility || 'visible' : 'none',
+          visible ? layer.layout?.visibility || 'visible' : 'none',
         );
-        if (p.type === 'line' && p['source-layer'] === 'transportation') {
+        if (layer.type === 'line' && layer['source-layer'] === 'transportation') {
           this.map.setPaintProperty(
-            p.id,
+            layer.id,
             'line-color',
-            o ? (/casing/.test(p.id) ? '#d5d3c8' : '#858989') : p.paint['line-color'],
+            detailed
+              ? /casing/.test(layer.id)
+                ? '#d5d3c8'
+                : '#858989'
+              : layer.paint['line-color'],
           );
         }
-        if (p.type === 'fill' && p['source-layer'] === 'water') {
-          this.map.setPaintProperty(p.id, 'fill-color', o ? '#90a0b7' : p.paint['fill-color']);
+        if (layer.type === 'fill' && layer['source-layer'] === 'water') {
+          this.map.setPaintProperty(
+            layer.id,
+            'fill-color',
+            detailed ? '#90a0b7' : layer.paint['fill-color'],
+          );
         }
       }
-      this.map.getCanvas().dataset.groundMode = this.vector ? (o ? 'scene' : 'overview') : 'hidden';
-      this.map.getCanvas().dataset.viewMode = o ? '3d' : '2d';
+      this.map.getCanvas().dataset.groundMode = this.vector
+        ? detailed
+          ? 'scene'
+          : 'overview'
+        : 'hidden';
+      this.map.getCanvas().dataset.viewMode = detailed ? '3d' : '2d';
     }
   }
 }

@@ -23,29 +23,30 @@ class RevealAnimation {
     this.lastTime = null;
     this.viewKey = '';
   }
-  add(i, o, p, x, T, w, l) {
-    const D = this.active.find((U) => U.id === i);
-    const F = {
-      id: i,
-      kind: o,
-      sphere: p,
-      attribute: x,
-      start: T,
-      count: w,
-      delay: l,
-      at: this.seen.has(i) ? -100 : (D?.at ?? 100000000000000000000),
+  add(id, kind, sphere, attribute, start, count, delay) {
+    // 同一要素的多个网格共用开始时间，已展示的要素直接保持完成状态。
+    const existingEntry = this.active.find((activeEntry) => activeEntry.id === id);
+    const entry = {
+      id: id,
+      kind: kind,
+      sphere: sphere,
+      attribute: attribute,
+      start: start,
+      count: count,
+      delay: delay,
+      at: this.seen.has(id) ? -100 : (existingEntry?.at ?? 100000000000000000000),
     };
-    x.array.fill(F.at, T, T + w);
-    this.entries.push(F);
-    if (D && !this.seen.has(i)) {
-      this.active.push(F);
+    attribute.array.fill(entry.at, start, start + count);
+    this.entries.push(entry);
+    if (existingEntry && !this.seen.has(id)) {
+      this.active.push(entry);
     } else {
-      if (!this.seen.has(i)) {
-        this.pending.push(F);
+      if (!this.seen.has(id)) {
+        this.pending.push(entry);
       }
     }
     this.viewKey = '';
-    return F;
+    return entry;
   }
   write(entry, time) {
     entry.at = time;
@@ -59,54 +60,56 @@ class RevealAnimation {
     this.viewKey = '';
     this.active.length = 0;
     this.pending = [...this.entries];
-    for (const i of this.entries) {
-      this.seen.delete(i.id);
-      this.write(i, 100000000000000000000);
+    for (const entry of this.entries) {
+      this.seen.delete(entry.id);
+      this.write(entry, 100000000000000000000);
     }
   }
-  update(i, o, p, x, T, w = false) {
-    if (((this.enabled.value = x ? 1 : 0), w)) {
+  update(now, frustum, visibility, enabled, viewKey, suspended = false) {
+    if (((this.enabled.value = enabled ? 1 : 0), suspended)) {
       this.lastTime = null;
       return false;
     }
-    if (x && this.active.length && this.lastTime !== null) {
-      this.time.value += Math.min(0.05, Math.max(0, (i - this.lastTime) / 1000));
+    // 动画时间只在启用且存在活动项时累加，单帧增量封顶以保持恢复时平稳。
+    if (enabled && this.active.length && this.lastTime !== null) {
+      this.time.value += Math.min(0.05, Math.max(0, (now - this.lastTime) / 1000));
     }
-    this.lastTime = i;
-    const l = this.viewKey !== T;
-    this.viewKey = T;
-    for (let D = this.active.length - 1; D >= 0; D--) {
-      const F = this.active[D];
-      if (p[F.kind] && o.intersectsSphere(F.sphere)) {
-        if (!x || this.time.value - F.at >= 1.5) {
-          this.write(F, -100);
-          this.seen.add(F.id);
-          this.active.splice(D, 1);
+    this.lastTime = now;
+    const viewChanged = this.viewKey !== viewKey;
+    this.viewKey = viewKey;
+    // 离开视锥的未完成项重新排队；再次进入时由当前视图统一触发展示。
+    for (let activeIndex = this.active.length - 1; activeIndex >= 0; activeIndex--) {
+      const entry = this.active[activeIndex];
+      if (visibility[entry.kind] && frustum.intersectsSphere(entry.sphere)) {
+        if (!enabled || this.time.value - entry.at >= 1.5) {
+          this.write(entry, -100);
+          this.seen.add(entry.id);
+          this.active.splice(activeIndex, 1);
         }
       } else {
-        this.write(F, 100000000000000000000);
-        this.pending.push(F);
-        this.active.splice(D, 1);
+        this.write(entry, 100000000000000000000);
+        this.pending.push(entry);
+        this.active.splice(activeIndex, 1);
       }
     }
-    if (l) {
-      for (let D = this.pending.length - 1; D >= 0; D--) {
-        const F = this.pending[D];
-        if (!p[F.kind] || !o.intersectsSphere(F.sphere)) {
+    if (viewChanged) {
+      for (let pendingIndex = this.pending.length - 1; pendingIndex >= 0; pendingIndex--) {
+        const entry = this.pending[pendingIndex];
+        if (!visibility[entry.kind] || !frustum.intersectsSphere(entry.sphere)) {
           continue;
         }
-        const U = this.active.find((j) => j.id === F.id);
-        this.write(F, x ? (U?.at ?? this.time.value + F.delay) : -100);
-        if (x) {
-          this.active.push(F);
+        const existingEntry = this.active.find((activeEntry) => activeEntry.id === entry.id);
+        this.write(entry, enabled ? (existingEntry?.at ?? this.time.value + entry.delay) : -100);
+        if (enabled) {
+          this.active.push(entry);
           this.started++;
         } else {
-          this.seen.add(F.id);
+          this.seen.add(entry.id);
         }
-        this.pending.splice(D, 1);
+        this.pending.splice(pendingIndex, 1);
       }
     }
-    return x && this.active.length > 0;
+    return enabled && this.active.length > 0;
   }
 }
 export { RevealAnimation };

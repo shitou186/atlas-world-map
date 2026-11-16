@@ -25,22 +25,22 @@ class TileScheduler {
     this.startedMs = performance.now();
     this.firstTileMs = null;
     this.completeMs = null;
-    for (let x = 0; x < 2; x++) {
-      const T = {
+    for (let workerIndex = 0; workerIndex < 2; workerIndex++) {
+      const workerSlot = {
         busy: false,
       };
-      this.startWorker(T);
-      this.workers.push(T);
+      this.startWorker(workerSlot);
+      this.workers.push(workerSlot);
     }
     map.on('remove', () => {
       this.pause();
       this.disposed = true;
       clearTimeout(this.retryTimer);
-      for (const x of this.requests.values()) {
-        x.abort();
+      for (const controller of this.requests.values()) {
+        controller.abort();
       }
-      for (const x of this.workers) {
-        x.worker.terminate();
+      for (const workerSlot of this.workers) {
+        workerSlot.worker.terminate();
       }
     });
   }
@@ -50,10 +50,10 @@ class TileScheduler {
     slot.worker = new Worker(new URL('../workers/geometry.worker.js', import.meta.url), {
       type: 'module',
     });
-    slot.worker.onmessage = ({ data: o }) => slot.resolve?.(o);
-    slot.worker.onerror = (o) => {
-      slot.error = o.message;
-      slot.reject?.(new Error(o.message));
+    slot.worker.onmessage = ({ data: message }) => slot.resolve?.(message);
+    slot.worker.onerror = (event) => {
+      slot.error = event.message;
+      slot.reject?.(new Error(event.message));
     };
   }
   update() {
@@ -61,90 +61,104 @@ class TileScheduler {
       this.pause();
       return;
     }
-    const i = this.map.getCenter().wrap();
-    const o = 65536;
-    const p = Math.floor(((i.lng + 180) / 360) * o);
-    const x = Math.floor(((1 - Math.asinh(Math.tan((i.lat * Math.PI) / 180)) / Math.PI) / 2) * o);
+    const center = this.map.getCenter().wrap();
+    const tileCount = 65536;
+    const centerX = Math.floor(((center.lng + 180) / 360) * tileCount);
+    const centerY = Math.floor(
+      ((1 - Math.asinh(Math.tan((center.lat * Math.PI) / 180)) / Math.PI) / 2) * tileCount,
+    );
     if (
       this.center &&
-      Math.min(Math.abs(p - this.center[0]), o - Math.abs(p - this.center[0])) +
-        Math.abs(x - this.center[1]) >
+      Math.min(Math.abs(centerX - this.center[0]), tileCount - Math.abs(centerX - this.center[0])) +
+        Math.abs(centerY - this.center[1]) >
         16
     ) {
+      // 大跨度移动开启新一代请求；取消网络任务，并在异步结果返回时校验版本。
       this.version++;
       this.pause();
       this.scene.clear();
       this.loaded.clear();
       this.ready.length = 0;
       this.upload = null;
-      for (const N of this.requests.values()) {
-        N.abort();
+      for (const controller of this.requests.values()) {
+        controller.abort();
       }
     }
-    this.center = [p, x];
+    this.center = [centerX, centerY];
     this.wanted.clear();
-    const T = this.map.getBounds();
-    const w = [];
-    const l = this.map.getCenter().lng;
-    const D = ((i.lng + 180) / 360) * o;
-    const F = Math.floor(D + ((T.getWest() - l) / 360) * o);
-    const U = Math.floor(D + ((T.getEast() - l) / 360) * o);
-    const j = Math.max(
+    const bounds = this.map.getBounds();
+    const visibleTiles = [];
+    const centerLongitude = this.map.getCenter().lng;
+    const fractionalCenterX = ((center.lng + 180) / 360) * tileCount;
+    const westTileX = Math.floor(
+      fractionalCenterX + ((bounds.getWest() - centerLongitude) / 360) * tileCount,
+    );
+    const eastTileX = Math.floor(
+      fractionalCenterX + ((bounds.getEast() - centerLongitude) / 360) * tileCount,
+    );
+    const northTileY = Math.max(
       0,
       Math.floor(
-        ((1 - Math.asinh(Math.tan((Math.min(85.051128, T.getNorth()) * Math.PI) / 180)) / Math.PI) /
+        ((1 -
+          Math.asinh(Math.tan((Math.min(85.051128, bounds.getNorth()) * Math.PI) / 180)) /
+            Math.PI) /
           2) *
-          o,
+          tileCount,
       ),
     );
-    const q = Math.min(
-      o - 1,
+    const southTileY = Math.min(
+      tileCount - 1,
       Math.floor(
         ((1 -
-          Math.asinh(Math.tan((Math.max(-85.051128, T.getSouth()) * Math.PI) / 180)) / Math.PI) /
+          Math.asinh(Math.tan((Math.max(-85.051128, bounds.getSouth()) * Math.PI) / 180)) /
+            Math.PI) /
           2) *
-          o,
+          tileCount,
       ),
     );
-    for (let N = j; N <= q; N++) {
-      for (let J = F; J <= U; J++) {
-        const se = ((J % o) + o) % o;
-        w.push({
-          key: se + '/' + N,
-          x: se,
-          y: N,
-          distance: (J - p) ** 2 + (N - x) ** 2,
+    // 横向瓦片编号跨日期变更线循环，距离仍按未环绕坐标计算以保持中心优先。
+    for (let tileY = northTileY; tileY <= southTileY; tileY++) {
+      for (let unwrappedTileX = westTileX; unwrappedTileX <= eastTileX; unwrappedTileX++) {
+        const wrappedTileX = ((unwrappedTileX % tileCount) + tileCount) % tileCount;
+        visibleTiles.push({
+          key: wrappedTileX + '/' + tileY,
+          x: wrappedTileX,
+          y: tileY,
+          distance: (unwrappedTileX - centerX) ** 2 + (tileY - centerY) ** 2,
         });
       }
     }
-    w.sort((N, J) => N.distance - J.distance);
-    for (const N of w) {
-      this.wanted.set(N.key, N);
+    visibleTiles.sort((firstTile, secondTile) => firstTile.distance - secondTile.distance);
+    for (const tile of visibleTiles) {
+      this.wanted.set(tile.key, tile);
     }
-    for (const N of this.failed.keys()) {
-      if (!this.wanted.has(N)) {
-        this.failed.delete(N);
+    for (const tileKey of this.failed.keys()) {
+      if (!this.wanted.has(tileKey)) {
+        this.failed.delete(tileKey);
       }
     }
-    for (const [N, J] of this.requests) {
-      if (!this.wanted.has(N)) {
-        J.abort();
-        this.requests.delete(N);
+    for (const [tileKey, controller] of this.requests) {
+      if (!this.wanted.has(tileKey)) {
+        controller.abort();
+        this.requests.delete(tileKey);
       }
     }
     if (this.upload && !this.wanted.has(this.upload.key)) {
       this.scene.removeTile(this.upload.key);
       this.upload = null;
     }
-    for (const N of this.loaded) {
-      const [J, se] = N.split('/').map(Number);
-      const Z = Math.min(Math.abs(J - p), o - Math.abs(J - p));
-      if (!(this.wanted.has(N) || (Z <= 2 && Math.abs(se - x) <= 2))) {
-        this.scene.removeTile(N);
-        this.loaded.delete(N);
+    for (const tileKey of this.loaded) {
+      const [tileX, tileY] = tileKey.split('/').map(Number);
+      const wrappedDistance = Math.min(
+        Math.abs(tileX - centerX),
+        tileCount - Math.abs(tileX - centerX),
+      );
+      if (!(this.wanted.has(tileKey) || (wrappedDistance <= 2 && Math.abs(tileY - centerY) <= 2))) {
+        this.scene.removeTile(tileKey);
+        this.loaded.delete(tileKey);
       }
     }
-    this.ready = this.ready.filter((N) => this.wanted.has(N.key));
+    this.ready = this.ready.filter((tile) => this.wanted.has(tile.key));
     this.pump();
     this.schedule();
     this.report();
@@ -157,86 +171,91 @@ class TileScheduler {
     if (this.disposed || this.map.isMoving() || !this.scene.enabled || this.map.getZoom() <= 15) {
       return;
     }
-    for (const [o, p] of this.downloaded) {
-      if (p.controller.signal.aborted || p.version !== this.version) {
-        this.downloaded.delete(o);
-        this.requests.delete(o);
+    for (const [tileKey, download] of this.downloaded) {
+      if (download.controller.signal.aborted || download.version !== this.version) {
+        this.downloaded.delete(tileKey);
+        this.requests.delete(tileKey);
       }
     }
-    for (const o of this.wanted.values()) {
+    // 下载与几何构建分阶段调度；待上传队列达到四项时暂停新派发，已在途任务仍可完成。
+    for (const tile of this.wanted.values()) {
       if (this.ready.length >= 4) {
         break;
       }
-      const p = this.downloaded.get(o.key);
-      if (!p) {
+      const download = this.downloaded.get(tile.key);
+      if (!download) {
         continue;
       }
-      const x = this.workers.find((T) => !T.busy);
-      if (!x) {
+      const workerSlot = this.workers.find((candidateSlot) => !candidateSlot.busy);
+      if (!workerSlot) {
         break;
       }
-      if (x.error) {
-        this.startWorker(x);
+      if (workerSlot.error) {
+        this.startWorker(workerSlot);
       }
-      x.busy = true;
-      this.downloaded.delete(o.key);
-      this.build(o, x, p)
-        .catch((T) => this.failure(o, T, p.controller, p.version))
+      workerSlot.busy = true;
+      this.downloaded.delete(tile.key);
+      this.build(tile, workerSlot, download)
+        .catch((buildError) =>
+          this.failure(tile, buildError, download.controller, download.version),
+        )
         .finally(() => {
-          x.busy = false;
-          x.resolve = null;
-          x.reject = null;
-          if (this.requests.get(o.key) === p.controller) {
-            this.requests.delete(o.key);
+          workerSlot.busy = false;
+          workerSlot.resolve = null;
+          workerSlot.reject = null;
+          if (this.requests.get(tile.key) === download.controller) {
+            this.requests.delete(tile.key);
           }
           this.pump();
           this.schedule();
           this.report();
         });
     }
-    for (const o of this.wanted.values()) {
+    for (const tile of this.wanted.values()) {
+      // 网络请求上限为六个；失败最多尝试三次，重试时刻到达后才重新入队。
       if (this.ready.length >= 4 || this.requests.size >= 6) {
         break;
       }
-      const p = this.failed.get(o.key);
+      const failure = this.failed.get(tile.key);
       if (
-        (p && (p.attempts >= 3 || performance.now() < p.retryAt)) ||
-        this.loaded.has(o.key) ||
-        this.requests.has(o.key) ||
-        this.upload?.key === o.key ||
-        this.ready.some((l) => l.key === o.key)
+        (failure && (failure.attempts >= 3 || performance.now() < failure.retryAt)) ||
+        this.loaded.has(tile.key) ||
+        this.requests.has(tile.key) ||
+        this.upload?.key === tile.key ||
+        this.ready.some((readyTile) => readyTile.key === tile.key)
       ) {
         continue;
       }
-      const x = this.cache.get(o.key);
-      if (x) {
-        this.cache.delete(o.key);
-        this.cache.set(o.key, x);
+      const cachedTile = this.cache.get(tile.key);
+      if (cachedTile) {
+        // Map 的插入顺序充当 LRU 顺序，命中后移到末尾。
+        this.cache.delete(tile.key);
+        this.cache.set(tile.key, cachedTile);
         this.ready.push({
-          ...o,
-          data: x.data,
+          ...tile,
+          data: cachedTile.data,
           fetchMs: 0,
           cache: 'MEMORY',
         });
         continue;
       }
-      const T = new AbortController();
-      const w = this.version;
-      this.requests.set(o.key, T);
-      this.load(o, T, w)
-        .then((l) => {
-          if (l) {
-            this.downloaded.set(o.key, {
-              input: l,
-              controller: T,
-              version: w,
+      const controller = new AbortController();
+      const version = this.version;
+      this.requests.set(tile.key, controller);
+      this.load(tile, controller, version)
+        .then((input) => {
+          if (input) {
+            this.downloaded.set(tile.key, {
+              input: input,
+              controller: controller,
+              version: version,
             });
           }
         })
-        .catch((l) => this.failure(o, l, T, w))
+        .catch((loadError) => this.failure(tile, loadError, controller, version))
         .finally(() => {
-          if (!this.downloaded.has(o.key) && this.requests.get(o.key) === T) {
-            this.requests.delete(o.key);
+          if (!this.downloaded.has(tile.key) && this.requests.get(tile.key) === controller) {
+            this.requests.delete(tile.key);
           }
           this.pump();
           this.schedule();
@@ -245,174 +264,189 @@ class TileScheduler {
     }
     clearTimeout(this.retryTimer);
     this.retryTimer = null;
-    let i = 1 / 0;
-    for (const [o, p] of this.failed) {
-      if (this.wanted.has(o) && !this.requests.has(o) && p.attempts < 3) {
-        i = Math.min(i, p.retryAt);
+    let nextRetryAt = 1 / 0;
+    for (const [tileKey, failure] of this.failed) {
+      if (this.wanted.has(tileKey) && !this.requests.has(tileKey) && failure.attempts < 3) {
+        nextRetryAt = Math.min(nextRetryAt, failure.retryAt);
       }
     }
-    if (Number.isFinite(i)) {
+    if (Number.isFinite(nextRetryAt)) {
       this.retryTimer = setTimeout(
         () => {
           this.retryTimer = null;
           this.pump();
           this.report();
         },
-        Math.max(0, i - performance.now()),
+        Math.max(0, nextRetryAt - performance.now()),
       );
     }
     this.schedule();
   }
-  failure(tile, error, p, x) {
-    if (this.disposed || p.signal.aborted || x !== this.version) {
+  // 取消及过期结果不计入失败；有效失败按次数递增等待时间。
+  failure(tile, error, controller, version) {
+    if (this.disposed || controller.signal.aborted || version !== this.version) {
       return;
     }
-    const T = (this.failed.get(tile.key)?.attempts || 0) + 1;
+    const attempts = (this.failed.get(tile.key)?.attempts || 0) + 1;
     this.failed.set(tile.key, {
       message: error.message,
-      attempts: T,
-      retryAt: performance.now() + T * 1500,
+      attempts: attempts,
+      retryAt: performance.now() + attempts * 1500,
     });
   }
   async loadGreen(tile) {
+    // 同一绿地源和瓦片共享进行中的 Promise；失败时移除缓存，允许后续重试。
     if (!this.greenSource) {
-      const D = this.map.getSource('openmaptiles');
+      const source = this.map.getSource('openmaptiles');
       this.greenSource = (
-        D.tiles
-          ? Promise.resolve(D)
-          : fetch(D.url, {
+        source.tiles
+          ? Promise.resolve(source)
+          : fetch(source.url, {
               signal: AbortSignal.timeout(30000),
-            }).then((F) => {
-              if (!F.ok) {
-                throw new Error('绿地数据源请求失败：HTTP ' + F.status);
+            }).then((response) => {
+              if (!response.ok) {
+                throw new Error('绿地数据源请求失败：HTTP ' + response.status);
               }
-              return F.json();
+              return response.json();
             })
-      ).catch((F) => {
-        throw ((this.greenSource = null), F);
+      ).catch((sourceError) => {
+        throw ((this.greenSource = null), sourceError);
       });
     }
-    const o = await this.greenSource;
-    const p = Math.min(16, o.maxzoom ?? 14);
-    const x = 2 ** (16 - p);
-    const T = Math.floor(tile.x / x);
-    const w = Math.floor(tile.y / x);
-    const l = o.tiles[0].replace('{z}', p).replace('{x}', T).replace('{y}', w);
-    if (!this.greenTiles.has(l)) {
-      const D = fetch(l, {
+    const source = await this.greenSource;
+    const zoom = Math.min(16, source.maxzoom ?? 14);
+    const tileScale = 2 ** (16 - zoom);
+    const tileX = Math.floor(tile.x / tileScale);
+    const tileY = Math.floor(tile.y / tileScale);
+    const tileUrl = source.tiles[0]
+      .replace('{z}', zoom)
+      .replace('{x}', tileX)
+      .replace('{y}', tileY);
+    if (!this.greenTiles.has(tileUrl)) {
+      const download = fetch(tileUrl, {
         signal: AbortSignal.timeout(30000),
       })
-        .then((F) => {
-          if (!F.ok) {
-            throw new Error('绿地数据请求失败：HTTP ' + F.status);
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error('绿地数据请求失败：HTTP ' + response.status);
           }
-          return F.arrayBuffer();
+          return response.arrayBuffer();
         })
-        .catch((F) => {
-          throw (this.greenTiles.delete(l), F);
+        .catch((downloadError) => {
+          throw (this.greenTiles.delete(tileUrl), downloadError);
         });
-      for (this.greenTiles.set(l, D); this.greenTiles.size > 32;) {
+      for (this.greenTiles.set(tileUrl, download); this.greenTiles.size > 32;) {
         this.greenTiles.delete(this.greenTiles.keys().next().value);
       }
     }
     return {
-      greenery: await this.greenTiles.get(l),
-      greenX: T,
-      greenY: w,
-      greenZ: p,
-      greenKey: l,
+      greenery: await this.greenTiles.get(tileUrl),
+      greenX: tileX,
+      greenY: tileY,
+      greenZ: zoom,
+      greenKey: tileUrl,
     };
   }
-  async load(i, o, p) {
-    const x = performance.now();
-    const [T, w] = await Promise.all([
-      fetch('/api/tiles/16/' + i.key, {
-        signal: AbortSignal.any([o.signal, AbortSignal.timeout(30000)]),
-      }).then(async (l) => {
-        if (!l.ok) {
-          throw new Error('地图数据请求失败：HTTP ' + l.status);
+  async load(tile, controller, version) {
+    const fetchStartedMs = performance.now();
+    const [tileInput, greeneryInput] = await Promise.all([
+      fetch('/api/tiles/16/' + tile.key, {
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30000)]),
+      }).then(async (response) => {
+        if (!response.ok) {
+          throw new Error('地图数据请求失败：HTTP ' + response.status);
         }
         return {
-          bytes: await l.arrayBuffer(),
-          cache: l.headers.get('X-Tile-Cache') || 'HTTP',
+          bytes: await response.arrayBuffer(),
+          cache: response.headers.get('X-Tile-Cache') || 'HTTP',
         };
       }),
-      this.loadGreen(i),
+      this.loadGreen(tile),
     ]);
-    if (!(o.signal.aborted || p !== this.version)) {
+    if (!(controller.signal.aborted || version !== this.version)) {
       return {
-        ...T,
-        ...w,
-        fetchMs: performance.now() - x,
+        ...tileInput,
+        ...greeneryInput,
+        fetchMs: performance.now() - fetchStartedMs,
       };
     }
   }
-  async build(i, o, { input: p, controller: x, version: T }) {
+  async build(tile, workerSlot, { input: input, controller: controller, version: version }) {
     const {
-      bytes: w,
-      greenery: l,
-      greenX: D,
-      greenY: F,
-      greenZ: U,
-      greenKey: j,
-      fetchMs: q,
-      cache: N,
-    } = p;
-    if (o.error) {
-      throw new Error(o.error);
+      bytes: bytes,
+      greenery: greenery,
+      greenX: greenX,
+      greenY: greenY,
+      greenZ: greenZ,
+      greenKey: greenKey,
+      fetchMs: fetchMs,
+      cache: cache,
+    } = input;
+    if (workerSlot.error) {
+      throw new Error(workerSlot.error);
     }
-    const J = l.slice(0);
-    const se = await new Promise((re, ue) => {
-      o.resolve = re;
-      o.reject = ue;
-      o.worker.postMessage(
+    // 绿地缓冲区仍由共享缓存持有，必须复制后转移；建筑缓冲区可直接交给 Worker。
+    const greenBytes = greenery.slice(0);
+    const result = await new Promise((resolve, reject) => {
+      workerSlot.resolve = resolve;
+      workerSlot.reject = reject;
+      workerSlot.worker.postMessage(
         {
-          ...i,
-          bytes: w,
-          greenBytes: J,
-          greenX: D,
-          greenY: F,
-          greenZ: U,
-          greenKey: j,
+          ...tile,
+          bytes: bytes,
+          greenBytes: greenBytes,
+          greenX: greenX,
+          greenY: greenY,
+          greenZ: greenZ,
+          greenKey: greenKey,
         },
-        [w, J],
+        [bytes, greenBytes],
       );
     });
-    if (x.signal.aborted || T !== this.version) {
+    // Worker 已开始的计算无法由网络取消中止，返回后丢弃取消或旧版本的结果。
+    if (controller.signal.aborted || version !== this.version) {
       return;
     }
-    if (se.error) {
-      throw new Error(se.error);
+    if (result.error) {
+      throw new Error(result.error);
     }
-    this.failed.delete(i.key);
-    const Z = se.data;
-    let G = 0;
-    for (const re of [Z, ...Object.values(Z.surfaces), ...Z.traffic, ...Z.boats, ...Z.railways]) {
-      for (const ue of Object.values(re)) {
-        if (ArrayBuffer.isView(ue)) {
-          G += ue.byteLength;
+    this.failed.delete(tile.key);
+    const data = result.data;
+    let estimatedBytes = 0;
+    for (const geometryGroup of [
+      data,
+      ...Object.values(data.surfaces),
+      ...data.traffic,
+      ...data.boats,
+      ...data.railways,
+    ]) {
+      for (const attribute of Object.values(geometryGroup)) {
+        if (ArrayBuffer.isView(attribute)) {
+          estimatedBytes += attribute.byteLength;
         }
       }
     }
+    // 几何缓存同时受数量和估算字节数限制，按最久未使用的顺序淘汰。
     for (
-      G += Z.features.length * 512 + (Z.trees.length + Z.furniture.length) * 128,
-        this.cache.set(i.key, {
-          data: Z,
-          bytes: G,
+      estimatedBytes +=
+        data.features.length * 512 + (data.trees.length + data.furniture.length) * 128,
+        this.cache.set(tile.key, {
+          data: data,
+          bytes: estimatedBytes,
         }),
-        this.cacheBytes += G;
+        this.cacheBytes += estimatedBytes;
       this.cache.size > 64 || this.cacheBytes > 128 * 1024 * 1024;
     ) {
-      const re = this.cache.keys().next().value;
-      this.cacheBytes -= this.cache.get(re).bytes;
-      this.cache.delete(re);
+      const oldestKey = this.cache.keys().next().value;
+      this.cacheBytes -= this.cache.get(oldestKey).bytes;
+      this.cache.delete(oldestKey);
     }
-    if (this.wanted.has(i.key)) {
+    if (this.wanted.has(tile.key)) {
       this.ready.push({
-        ...i,
-        data: Z,
-        fetchMs: q,
-        cache: N,
+        ...tile,
+        data: data,
+        fetchMs: fetchMs,
+        cache: cache,
       });
     }
   }
@@ -429,42 +463,43 @@ class TileScheduler {
         if (((this.timer = null), this.map.isMoving())) {
           return;
         }
-        const i = performance.now();
+        const sliceStartedMs = performance.now();
         if (!this.upload) {
           this.ready.sort(
-            (w, l) =>
-              (this.wanted.get(w.key)?.distance ?? 1 / 0) -
-              (this.wanted.get(l.key)?.distance ?? 1 / 0),
+            (firstTile, secondTile) =>
+              (this.wanted.get(firstTile.key)?.distance ?? 1 / 0) -
+              (this.wanted.get(secondTile.key)?.distance ?? 1 / 0),
           );
-          const T = this.ready.shift();
-          if (!this.wanted.has(T.key) || this.loaded.has(T.key)) {
+          const tile = this.ready.shift();
+          if (!this.wanted.has(tile.key) || this.loaded.has(tile.key)) {
             this.schedule();
             return;
           }
           this.upload = {
-            ...T,
-            generator: this.scene.prepareTile(T.key, T.data),
+            ...tile,
+            generator: this.scene.prepareTile(tile.key, tile.data),
             commitMs: 0,
             maxSliceMs: 0,
           };
         }
-        const o = this.upload;
-        let p = false;
-        do p = o.generator.next().done;
-        while (!p && performance.now() - i < 4);
-        const x = performance.now() - i;
-        o.commitMs += x;
-        o.maxSliceMs = Math.max(o.maxSliceMs, x);
-        if (p) {
-          this.loaded.add(o.key);
+        const upload = this.upload;
+        let complete = false;
+        // 每帧分片推进上传生成器，约四毫秒后让出主线程；完成后才标记瓦片已加载。
+        do complete = upload.generator.next().done;
+        while (!complete && performance.now() - sliceStartedMs < 4);
+        const sliceMs = performance.now() - sliceStartedMs;
+        upload.commitMs += sliceMs;
+        upload.maxSliceMs = Math.max(upload.maxSliceMs, sliceMs);
+        if (complete) {
+          this.loaded.add(upload.key);
           this.upload = null;
           this.history.push({
-            key: o.key,
-            fetchMs: o.fetchMs,
-            cache: o.cache,
-            commitMs: o.commitMs,
-            maxSliceMs: o.maxSliceMs,
-            generation: o.data.timings,
+            key: upload.key,
+            fetchMs: upload.fetchMs,
+            cache: upload.cache,
+            commitMs: upload.commitMs,
+            maxSliceMs: upload.maxSliceMs,
+            generation: upload.data.timings,
           });
           this.history = this.history.slice(-32);
           this.report();
@@ -479,39 +514,41 @@ class TileScheduler {
     if (this.disposed) {
       return;
     }
-    const i = new Map();
-    let o = 0;
-    let p = 0;
-    let x = 0;
-    for (const l of this.loaded) {
-      const D = this.scene.tiles.get(l).data;
-      for (const F of D.features) {
-        i.set(F.id, F);
+    const features = new Map();
+    let treeCount = 0;
+    let roadCount = 0;
+    let roofCount = 0;
+    for (const tileKey of this.loaded) {
+      const tileData = this.scene.tiles.get(tileKey).data;
+      for (const feature of tileData.features) {
+        features.set(feature.id, feature);
       }
-      o += D.trees.length;
-      p += D.landscapeStats.roads;
+      treeCount += tileData.trees.length;
+      roadCount += tileData.landscapeStats.roads;
     }
-    for (const l of i.values()) {
-      if (l.roofShape !== 'flat') {
-        x++;
+    for (const feature of features.values()) {
+      if (feature.roofShape !== 'flat') {
+        roofCount++;
       }
     }
-    const T = [...this.wanted.keys()].every((l) => this.loaded.has(l));
+    const complete = [...this.wanted.keys()].every((tileKey) => this.loaded.has(tileKey));
     if (this.loaded.size) {
       this.firstTileMs ??= performance.now();
     }
-    if (T && this.wanted.size) {
+    if (complete && this.wanted.size) {
       this.completeMs ??= performance.now();
     }
-    const w = [...this.wanted.keys()].map((l) => this.failed.get(l)?.message).find(Boolean);
+    const failureMessage = [...this.wanted.keys()]
+      .map((tileKey) => this.failed.get(tileKey)?.message)
+      .find(Boolean);
     this.changed({
-      buildings: i.size,
-      trees: o,
-      roads: p,
-      roofs: x,
-      complete: T,
-      failed: w,
-      loaded: [...this.wanted.keys()].filter((l) => this.loaded.has(l)).length,
+      buildings: features.size,
+      trees: treeCount,
+      roads: roadCount,
+      roofs: roofCount,
+      complete: complete,
+      failed: failureMessage,
+      loaded: [...this.wanted.keys()].filter((tileKey) => this.loaded.has(tileKey)).length,
       total: this.wanted.size,
     });
     if (new URLSearchParams(location.search).has('profile')) {
@@ -523,7 +560,7 @@ class TileScheduler {
         retained: this.scene.tiles.size,
         pending: this.requests.size,
         downloaded: this.downloaded.size,
-        building: this.workers.filter((l) => l.busy).length,
+        building: this.workers.filter((workerSlot) => workerSlot.busy).length,
         queued: this.ready.length,
         failed: [...this.failed],
         history: this.history,

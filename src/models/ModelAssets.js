@@ -6,11 +6,13 @@ class ModelAssets {
   static pending = null;
   static async load() {
     if (!this.pending) {
-      this.pending = fetch('/models.bin').then(async (i) => {
-        if (!i.ok) {
-          throw new Error(`\u6A21\u578B\u8D44\u6E90\u52A0\u8F7D\u5931\u8D25\uFF1AHTTP ${i.status}`);
+      this.pending = fetch('/models.bin').then(async (response) => {
+        if (!response.ok) {
+          throw new Error(
+            `\u6A21\u578B\u8D44\u6E90\u52A0\u8F7D\u5931\u8D25\uFF1AHTTP ${response.status}`,
+          );
         }
-        this.models = SceneCodec.decode(await i.arrayBuffer());
+        this.models = SceneCodec.decode(await response.arrayBuffer());
         return this.models;
       });
     }
@@ -20,26 +22,30 @@ class ModelAssets {
     if (!this.models) {
       throw new Error('模型资源尚未加载，请先完成 ModelAssets.load()。');
     }
-    const o = this.models[name];
-    if (!o) {
+    const model = this.models[name];
+    if (!model) {
       throw new Error(`\u6A21\u578B\u8D44\u6E90\u4E0D\u5B58\u5728\uFF1A${name}`);
     }
-    const p = new BufferGeometry();
-    for (const [x, T] of Object.entries(o.attributes)) {
-      p.setAttribute(x, new BufferAttribute(T.array, T.itemSize, T.normalized));
+    // 重用解码后的数组创建几何属性，并恢复预存边界供裁剪使用。
+    const geometry = new BufferGeometry();
+    for (const [attributeName, attribute] of Object.entries(model.attributes)) {
+      geometry.setAttribute(
+        attributeName,
+        new BufferAttribute(attribute.array, attribute.itemSize, attribute.normalized),
+      );
     }
-    if (o.index) {
-      p.setIndex(new BufferAttribute(o.index.array, 1, o.index.normalized));
+    if (model.index) {
+      geometry.setIndex(new BufferAttribute(model.index.array, 1, model.index.normalized));
     }
-    p.boundingBox = new Box3(
-      new Vector3().fromArray(o.boundingBox.min),
-      new Vector3().fromArray(o.boundingBox.max),
+    geometry.boundingBox = new Box3(
+      new Vector3().fromArray(model.boundingBox.min),
+      new Vector3().fromArray(model.boundingBox.max),
     );
-    p.boundingSphere = new Sphere(
-      new Vector3().fromArray(o.boundingSphere.center),
-      o.boundingSphere.radius,
+    geometry.boundingSphere = new Sphere(
+      new Vector3().fromArray(model.boundingSphere.center),
+      model.boundingSphere.radius,
     );
-    return p;
+    return geometry;
   }
 }
 export { ModelAssets };
