@@ -3,6 +3,7 @@ import { fixtureTile } from './fixtures/vector-tile.js';
 
 async function mockMapServices(page) {
   const tile = fixtureTile();
+  const apiHeaders = { 'Access-Control-Allow-Origin': 'http://127.0.0.1:4174' };
   await page.route('**/style.json', route => route.fulfill({ json: {
     version: 8,
     sources: { openmaptiles: { type: 'vector', tiles: ['http://127.0.0.1:4174/fixture/{z}/{x}/{y}.pbf'], maxzoom: 14 } },
@@ -12,8 +13,8 @@ async function mockMapServices(page) {
     ],
   } }));
   await page.route('**/fixture/**', route => route.fulfill({ body: Buffer.alloc(0), contentType: 'application/x-protobuf' }));
-  await page.route('**/api/tiles/**', route => route.fulfill({ body: tile, contentType: 'application/x-protobuf' }));
-  await page.route('**/api/geocode?**', route => route.fulfill({ json: [
+  await page.route('**/api/tiles/**', route => route.fulfill({ headers: apiHeaders, body: tile, contentType: 'application/x-protobuf' }));
+  await page.route('**/api/geocode?**', route => route.fulfill({ headers: apiHeaders, json: [
     { display_name: '外滩, 上海市', lon: '121.49', lat: '31.24' },
     { display_name: 'Invalid coordinates', lon: '200', lat: '90' },
   ] }));
@@ -21,9 +22,11 @@ async function mockMapServices(page) {
 
 test('production source build renders 3D tiles and preserves map controls and search', async ({ page }) => {
   const errors = [];
+  const requestUrls = [];
   page.on('pageerror', error => errors.push(error.message));
+  page.on('request', request => requestUrls.push(request.url()));
   await mockMapServices(page);
-  await page.goto('/?profile');
+  await page.goto('./?profile');
   const canvas = page.locator('.maplibregl-canvas');
   await expect.poll(() => canvas.getAttribute('data-scene-frames'), { timeout: 45000 }).not.toBeNull();
   await expect.poll(async () => Number(await page.locator('#building-count').textContent()), { timeout: 45000 }).toBeGreaterThan(0);
@@ -63,13 +66,20 @@ test('production source build renders 3D tiles and preserves map controls and se
   await expect(page.locator('#location-results')).toBeHidden();
   await page.locator('[data-place="tokyo"]').click();
   await expect(page.locator('[data-place="tokyo"]')).toHaveClass('active');
+  if (process.env.ATLAS_TEST_PAGES === '1') {
+    const apiBase = (process.env.VITE_API_BASE_URL || 'https://api.atlas.test').replace(/\/+$/, '');
+    expect(requestUrls.some(url => url.startsWith(`${apiBase}/api/tiles/`))).toBe(true);
+    expect(requestUrls.some(url => url.startsWith(`${apiBase}/api/geocode?`))).toBe(true);
+    const escapedAssets = requestUrls.filter(url => /^http:\/\/127\.0\.0\.1:4174\/(?:assets\/|models(?:\/|\.bin)|textures\/|style\.json)/.test(url));
+    if ((process.env.VITE_BASE_PATH || '/atlas-world-map/') !== '/') expect(escapedAssets).toEqual([]);
+  }
   expect(errors).toEqual([]);
 });
 
 test('mobile settings, search and Escape preserve responsive behavior', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await mockMapServices(page);
-  await page.goto('/osm/');
+  await page.goto('./osm/');
   await expect(page.locator('#settings')).toBeHidden();
   await expect(page.locator('.maplibregl-canvas')).toHaveCount(1);
   await page.locator('#panel-toggle').click();

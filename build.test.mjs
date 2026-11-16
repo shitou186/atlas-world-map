@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cp, mkdtemp, readFile, readdir, rm, symlink } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -48,4 +48,31 @@ test('a clean source copy rebuilds frontend, Worker, models, Node and Cloudflare
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
+});
+
+test('Pages 从干净源码构建子目录静态站点，API 独立且不包含 Node/Cloudflare 运行文件', { timeout: 120000 }, async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(), 'atlas-pages-build-'));
+  const excluded = new Set(['dist', 'cloudflare', 'node_modules', '.git', '.wrangler', '.openai', '.sites-runtime', 'test-results', 'playwright-report']);
+  try {
+    await cp(root, temporary, { recursive: true, filter: source => !excluded.has(path.relative(root, source).split(path.sep)[0]) });
+    await symlink(path.join(root, 'node_modules'), path.join(temporary, 'node_modules'), 'dir');
+    // CI 先执行完整测试再构建 Pages，必须清理此前留下的 Node 服务产物。
+    await mkdir(path.join(temporary, 'dist/server'), { recursive: true });
+    await writeFile(path.join(temporary, 'dist/server/index.js'), 'export default null;');
+    await execute('npm', ['run', 'build:pages'], { cwd: temporary, timeout: 90000, maxBuffer: 2 ** 20, env: {
+      ...process.env, VITE_BASE_PATH: '/atlas-world-map/', VITE_API_BASE_URL: 'https://api.atlas.test/gateway/',
+    } });
+    const html = await readFile(path.join(temporary, 'dist/index.html'), 'utf8');
+    assert.match(html, /src="\/atlas-world-map\/assets\//);
+    assert.match(html, /href="\/atlas-world-map\/assets\//);
+    assert.equal(await readFile(path.join(temporary, 'dist/osm/index.html'), 'utf8'), html);
+    assert.equal(await readFile(path.join(temporary, 'dist/.nojekyll'), 'utf8'), '');
+    await assert.rejects(readFile(path.join(temporary, 'dist/server/index.js')), { code: 'ENOENT' });
+    await assert.rejects(readFile(path.join(temporary, 'cloudflare/worker.mjs')), { code: 'ENOENT' });
+    const names = await readdir(path.join(temporary, 'dist/assets'));
+    assert.ok(names.some(name => /geometry.*\.js$/.test(name)));
+    const scripts = await Promise.all(names.filter(name => name.endsWith('.js')).map(name => readFile(path.join(temporary, 'dist/assets', name), 'utf8')));
+    assert.ok(scripts.some(script => script.includes('https://api.atlas.test/gateway')));
+    assert.deepEqual(await readFile(path.join(temporary, 'dist/models.bin')), await readFile(path.join(temporary, 'public/models.bin')));
+  } finally { await rm(temporary, { recursive: true, force: true }); }
 });

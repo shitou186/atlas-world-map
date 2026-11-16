@@ -6,6 +6,7 @@ import { ModelAssets } from './models/ModelAssets.js';
 import { TrainAssets } from './models/TrainAssets.js';
 import { BoatAssets } from './models/BoatAssets.js';
 import { TileScheduler } from './map/TileScheduler.js';
+import { assetUrl, apiUrl } from './urls.js';
 class AtlasApp {
   constructor() {
     this.mobile = matchMedia('(max-width: 900px)');
@@ -36,7 +37,7 @@ class AtlasApp {
   }
   async start() {
     const [styleResponse, profileModule] = await Promise.all([
-      fetch('/style.json'),
+      fetch(assetUrl('/style.json')),
       new URLSearchParams(location.search).has('profile')
         ? import('./diagnostics/InteractionMetrics.js')
         : null,
@@ -422,7 +423,7 @@ class AtlasApp {
     resultsPanel.hidden = false;
     statusLabel.textContent = '正在搜索…';
     optionsList.replaceChildren();
-    const requestUrl = `/api/geocode?q=${encodeURIComponent(query)}`;
+    const requestUrl = apiUrl(`/api/geocode?q=${encodeURIComponent(query)}`);
     const response = await fetch(requestUrl, {
       signal: searchController.signal,
     });

@@ -9,6 +9,7 @@ import {
   Sphere,
 } from 'three';
 import { SceneCodec } from './SceneCodec.js';
+import { assetUrl } from '../urls.js';
 class TrainAssets {
   static models = [];
   static pending = null;
@@ -22,8 +23,8 @@ class TrainAssets {
   static async read() {
     // 模型和纹理并行加载，全部就绪后再组装列车各节几何体。
     const [response, texture] = await Promise.all([
-      fetch('/models/train/models.bin'),
-      new TextureLoader().loadAsync('/models/train/Textures/colormap.png'),
+      fetch(assetUrl('/models/train/models.bin')),
+      new TextureLoader().loadAsync(assetUrl('/models/train/Textures/colormap.png')),
     ]);
     if (!response.ok) {
       throw new Error('列车模型不可用');

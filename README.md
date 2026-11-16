@@ -69,10 +69,57 @@ prepare-cloudflare.mjs   Cloudflare 部署文件生成
 ```bash
 pnpm install --frozen-lockfile
 pnpm exec wrangler login
-pnpm deploy
+pnpm run deploy
 ```
 
-`pnpm deploy` 先完整构建再部署。部署配置为 `wrangler.jsonc`，Worker 名称为 `atlas-world-map-20261116`。静态文件通过 Workers Static Assets 托管，接口通过 Worker 转发。
+`pnpm run deploy` 先完整构建再部署。部署配置为 `wrangler.jsonc`，Worker 名称为 `atlas-world-map-20261116`。静态文件通过 Workers Static Assets 托管，接口通过 Worker 转发。
+
+## 发布到 GitHub Pages
+
+Pages 只托管静态前端，瓦片与搜索由已有 Cloudflare Worker 提供：
+
+- Pages 地址：<https://shitou186.github.io/atlas-world-map/>
+- 默认 API：<https://atlas-world-map-20261116.weirdopursuer.workers.dev>
+
+首次启用时，在 GitHub 仓库 **Settings → Pages → Build and deployment → Source** 选择 **GitHub Actions**。工作流位于 [`.github/workflows/pages.yml`](./.github/workflows/pages.yml)，推送 `main` 或在 Actions 中手动运行后，会安装固定版本 pnpm 和 Node.js 22、执行测试、构建纯静态产物并发布。默认不需要填写额外 Token。
+
+Pages 使用独立构建模式：
+
+```bash
+pnpm build:pages
+pnpm preview:pages
+```
+
+本地预览访问 <http://localhost:4173/atlas-world-map/>。输出仍在 `dist/`，包含模型、纹理、Worker、动态模块和 `/osm/` 兼容入口，不生成 Node 服务或 Cloudflare 部署目录。执行 `pnpm start`、`pnpm build` 或 `pnpm run deploy` 时，会重新构建根路径版本。
+
+可在仓库 **Settings → Secrets and variables → Actions → Variables** 配置以下公开变量：
+
+| 变量 | 默认行为 | 用途 |
+| --- | --- | --- |
+| `VITE_API_BASE_URL` | 沿用上面的 Worker 地址 | API 服务根地址，必须为 HTTPS，不带 `/api` 后缀；可包含网关路径前缀 |
+| `VITE_BASE_PATH` | 工作流读取 Pages 的实际路径 | 通常无需填写；仓库站点为 `/atlas-world-map/`，自定义域名根目录为 `/` |
+
+手动构建可通过环境变量覆盖，例如：
+
+```bash
+VITE_BASE_PATH=/ VITE_API_BASE_URL=https://your-worker.workers.dev pnpm build:pages
+```
+
+本机默认的 `build:pages` 使用 `/atlas-world-map/`，自动工作流则使用 GitHub Pages 返回的路径，兼容自定义域名。普通 `dev/start/build/deploy` 固定使用根路径和同源 API，不受这些 Pages 变量影响。`VITE_*` 会写入浏览器代码，不能放密钥。
+
+### Pages 与 Worker 的跨域配置
+
+Worker 的 `CORS_ALLOWED_ORIGINS` 位于 `wrangler.jsonc`，默认允许 `https://shitou186.github.io`，以及本地 Pages 预览使用的 `http://localhost:4173`、`http://127.0.0.1:4173`。这是来源域名，**不能加 `/atlas-world-map/` 路径**。多个来源用逗号分隔；换用自定义域名或其他预览端口时需追加它的完整来源，例如 `https://maps.example.com`，并重新部署 Worker。
+
+```bash
+pnpm run deploy
+```
+
+Worker 对允许来源的 GET、HEAD、OPTIONS 返回 CORS 头，包含二进制瓦片、搜索结果和接口错误响应。同源请求及没有 Origin 头的服务端调用保留原有行为。首次发布或修改 CORS 后，应先更新这个 Worker，再使用 Pages 前端。
+
+仓库自动工作流只发布 Pages，不需要 Cloudflare 凭据，也不会自动修改 Worker。Worker 的更新仍使用现有 `pnpm run deploy` 流程。
+
+GitHub 官方的 [自定义 Pages 工作流说明](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages) 与 [Vite 部署说明](https://vite.dev/guide/static-deploy.html#github-pages) 可用于排查站点设置和部署权限。
 
 ## 验证
 
@@ -89,3 +136,5 @@ pnpm test:browser
 使用 `ATLAS_TEST_DEV=1 pnpm test:browser` 可改为验证开发服务，包括 CSS/JS 热更新以及同一套三维地图和移动端回归。
 
 第三方资源及地图数据署名见 [SOURCES.md](./SOURCES.md)。
+
+使用 `ATLAS_TEST_PAGES=1 pnpm test:browser` 可验证真实的 Pages 子目录静态构建：模型与纹理不越出部署目录，几何 Worker 和动态模块正常加载，瓦片与搜索使用独立 API 地址。测试通过固定数据隔离第三方服务波动。

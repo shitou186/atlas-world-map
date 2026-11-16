@@ -1,11 +1,12 @@
 // Reconstructed from the existing Atlas page; see SOURCES.md for provenance.
 import { BufferGeometry, BufferAttribute, Color } from 'three';
+import { assetUrl } from '../urls.js';
 class BoatAssets {
   static geometry = null;
   static pending = null;
   static load() {
     if (!this.pending) {
-      this.pending = fetch('/models/boat/boat.bis').then(async (response) => {
+      this.pending = fetch(assetUrl('/models/boat/boat.bis')).then(async (response) => {
         if (!response.ok) {
           throw new Error(
             `\u8239\u53EA\u6A21\u578B\u4E0D\u53EF\u7528\uFF1AHTTP ${response.status}`,

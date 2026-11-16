@@ -1,4 +1,5 @@
 // Reconstructed from the existing Atlas page; see SOURCES.md for provenance.
+import { apiUrl } from '../urls.js';
 class TileScheduler {
   constructor(map, scene, onChange) {
     this.map = map;
@@ -350,7 +351,7 @@ class TileScheduler {
   async load(tile, controller, version) {
     const fetchStartedMs = performance.now();
     const [tileInput, greeneryInput] = await Promise.all([
-      fetch('/api/tiles/16/' + tile.key, {
+      fetch(apiUrl('/api/tiles/16/' + tile.key), {
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30000)]),
       }).then(async (response) => {
         if (!response.ok) {

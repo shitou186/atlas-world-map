@@ -7,16 +7,17 @@ import {
   MeshLambertMaterial,
   DoubleSide,
 } from 'three';
+import { assetUrl } from '../urls.js';
 class WaterMaterial {
   constructor(map, cameraPosition) {
     const textureLoader = new TextureLoader();
-    this.bump = textureLoader.load('/textures/WaterBumpAndReflection.png', () =>
+    this.bump = textureLoader.load(assetUrl('/textures/WaterBumpAndReflection.png'), () =>
       map.triggerRepaint(),
     );
     this.bump.wrapS = this.bump.wrapT = RepeatWrapping;
     this.bump.generateMipmaps = false;
     this.bump.minFilter = this.bump.magFilter = LinearFilter;
-    this.sky = textureLoader.load('/textures/GradientSky.png', () => map.triggerRepaint());
+    this.sky = textureLoader.load(assetUrl('/textures/GradientSky.png'), () => map.triggerRepaint());
     this.sky.minFilter = this.sky.magFilter = LinearFilter;
     this.sky.generateMipmaps = false;
     this.uniforms = {

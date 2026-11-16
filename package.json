@@ -6,9 +6,11 @@
     "dev": "vite",
     "start": "node build.mjs && node server.mjs",
     "build": "node build.mjs && node prepare-cloudflare.mjs",
-    "test": "node build.mjs && node prepare-cloudflare.mjs && node --test --test-isolation=none handler.test.mjs source.test.mjs build.test.mjs dev.test.mjs",
+    "test": "node build.mjs && node prepare-cloudflare.mjs && node --test --test-isolation=none handler.test.mjs source.test.mjs build.test.mjs dev.test.mjs urls.test.mjs pages.test.mjs",
     "deploy": "node build.mjs && node prepare-cloudflare.mjs && wrangler deploy",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "build:pages": "node build-pages.mjs",
+    "preview:pages": "vite preview --mode pages"
   },
   "devDependencies": {
     "@playwright/test": "1.65.1",
