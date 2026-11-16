@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="theme-color" content="#152d32" />
+    <title>Atlas · 世界地图</title>
+    <script type="module" crossorigin src="/assets/index-HuF377fM.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-BXv3RRcp.css">
+  </head>
+  <body>
+    <div id="map" aria-label="交互式三维世界地图"></div>
+    <header class="toolbar">
+      <a class="brand" href="#" aria-label="Atlas 世界地图"><span class="brand-mark">A</span><span>ATLAS<small>世界地图</small></span></a>
+      <form id="location-form" class="location-form">
+        <label class="sr-only" for="location">地点或地址</label>
+        <input id="location" type="search" enterkeyhint="search" autocomplete="off" maxlength="180" placeholder="搜索地点或地址" aria-controls="location-results" />
+        <button type="submit" title="搜索地点">搜索 <span>↗</span></button>
+        <div id="location-results" class="location-results" hidden>
+          <p id="location-status" role="status" aria-live="polite"></p>
+          <ul id="location-options" aria-label="地点搜索结果"></ul>
+          <small>地址数据 © OpenStreetMap contributors</small>
+        </div>
+      </form>
+      <nav class="map-actions" aria-label="地图显示控制">
+        <button id="vector-toggle" class="panel-toggle" aria-pressed="true" title="开启或关闭当前模式的矢量地面与标注">矢量底图 · 开</button>
+        <button id="scene-toggle" class="panel-toggle" aria-pressed="true" title="开启或关闭三维显示">3D</button>
+        <button id="panel-toggle" class="panel-toggle" aria-expanded="false" aria-controls="settings">显示设置</button>
+      </nav>
+    </header>
+    <aside id="settings" class="settings" aria-labelledby="settings-title" hidden>
+      <div class="settings-heading">
+        <div class="eyebrow">探索世界</div>
+        <h1 id="settings-title">城市的每一面</h1>
+        <button id="close-settings" class="close" aria-label="关闭显示设置">×</button>
+      </div>
+      <div class="settings-content">
+      <p class="intro">沿街道漫游，观察建筑、屋顶与日光。</p>
+      <div class="places" aria-label="城市导航">
+        <button data-place="paris">巴黎</button>
+        <button data-place="berlin">柏林</button>
+        <button data-place="amsterdam">阿姆斯特丹</button>
+        <button data-place="newyork">纽约</button>
+        <button data-place="tokyo">东京</button>
+        <button data-place="shanghai" class="active">上海</button>
+      </div>
+      <div class="divider"></div>
+      <div class="section-label">俯仰角 <output id="pitch-label" for="map-pitch">56°</output></div>
+      <label class="sr-only" for="map-pitch">地图俯仰角度</label>
+      <input id="map-pitch" type="range" min="0" max="75" step="1" value="56" />
+      <div class="range-label"><span>俯视 0°</span><span>倾斜 75°</span></div>
+      <div class="divider"></div>
+      <div class="section-label">日光 <output id="time-label">14:00</output></div>
+      <label class="sr-only" for="sun-time">当地太阳时</label>
+      <input id="sun-time" type="range" min="6" max="20" step="0.25" value="14" />
+      <div class="range-label"><span>清晨</span><span>正午</span><span>傍晚</span></div>
+      <label class="switch-row"><span>三维建筑</span><input id="buildings" type="checkbox" checked /></label>
+      <label class="switch-row"><span>树木与绿地</span><input id="vegetation" type="checkbox" checked /></label>
+      <label class="switch-row"><span>植被精度</span><select id="tree-detail" aria-label="植被精度"><option value="auto">自动</option><option value="full">全部精细</option></select></label>
+      <label class="switch-row"><span>道路细节</span><input id="roads" type="checkbox" checked /></label>
+      <label class="switch-row"><span>路灯</span><input id="lamps" type="checkbox" checked /></label>
+      <label class="switch-row"><span>道路车辆</span><input id="traffic" type="checkbox" checked /></label>
+      <label class="switch-row"><span>车辆行驶</span><input id="traffic-motion" type="checkbox" checked /></label>
+      <label class="switch-row"><span>水上船只</span><input id="boats" type="checkbox" checked /></label>
+      <label class="switch-row"><span>铁路列车</span><input id="trains" type="checkbox" checked /></label>
+      <label class="switch-row"><span>入场动画</span><input id="motion" type="checkbox" checked /></label>
+      <label class="switch-row"><span>树叶微风</span><input id="wind" type="checkbox" checked /></label>
+      <label class="switch-row"><span>日照阴影</span><input id="shadows" type="checkbox" checked /></label>
+      <label class="switch-row"><span>地名标注</span><input id="labels" type="checkbox" checked /></label>
+      <div class="divider"></div>
+      <div id="load-state" class="load-state" role="status"><span class="status-dot"></span><span id="status-text">正在连接地图</span></div>
+      <div class="statistics"><div><strong id="building-count">—</strong><span>建筑与部件</span></div><div><strong id="roof-count">—</strong><span>立体屋顶</span></div></div>
+      <div class="statistics"><div><strong id="tree-count">—</strong><span>树木</span></div><div><strong id="road-count">—</strong><span>道路</span></div></div>
+      <button id="replay" class="retry">重播生长动画 ↗</button>
+      <p id="source-note" class="data-note"></p>
+      <p id="data-note" class="data-note">放大到街区查看建筑，点击建筑查看数据。</p>
+      <button id="retry" class="retry" hidden>重新加载</button>
+      </div>
+    </aside>
+    <section id="feature-card" class="feature-card" hidden aria-label="建筑信息">
+      <button id="close-feature" class="close" aria-label="关闭建筑信息">×</button>
+      <div class="eyebrow">建筑档案</div>
+      <h2 id="feature-name"></h2>
+      <dl id="feature-properties"></dl>
+      <a id="feature-link" target="_blank" rel="noopener noreferrer">查看 OpenStreetMap ↗</a>
+    </section>
+    <div class="map-hint">拖动平移 · 右键旋转 · 滚轮缩放</div>
+  </body>
+</html>
