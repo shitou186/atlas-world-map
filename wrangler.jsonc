@@ -4,7 +4,7 @@
   "compatibility_date": "2026-11-16",
   "workers_dev": true,
   "vars": {
-    "CORS_ALLOWED_ORIGINS": "https://shitou186.github.io,http://localhost:4173,http://127.0.0.1:4173"
+    "CORS_ALLOWED_ORIGINS": ""
   },
   "assets": {
     "directory": "cloudflare/assets",

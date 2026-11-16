@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { fixtureTile } from './fixtures/vector-tile.js';
 
 async function mockMapServices(page) {
+  await page.route('https://*.workers.dev/**', route => route.abort());
   const tile = fixtureTile();
   const apiHeaders = { 'Access-Control-Allow-Origin': 'http://127.0.0.1:4174' };
   await page.route('**/style.json', route => route.fulfill({ json: {
@@ -13,8 +14,8 @@ async function mockMapServices(page) {
     ],
   } }));
   await page.route('**/fixture/**', route => route.fulfill({ body: Buffer.alloc(0), contentType: 'application/x-protobuf' }));
-  await page.route('**/api/tiles/**', route => route.fulfill({ headers: apiHeaders, body: tile, contentType: 'application/x-protobuf' }));
-  await page.route('**/api/geocode?**', route => route.fulfill({ headers: apiHeaders, json: [
+  await page.route(process.env.ATLAS_TEST_PAGES === '1' ? 'https://tiles.streets.gl/vector/16/**' : '**/api/tiles/**', route => route.fulfill({ headers: apiHeaders, body: tile, contentType: 'application/x-protobuf' }));
+  await page.route(process.env.ATLAS_TEST_PAGES === '1' ? 'https://nominatim.openstreetmap.org/search?**' : '**/api/geocode?**', route => route.fulfill({ headers: apiHeaders, json: [
     { display_name: '外滩, 上海市', lon: '121.49', lat: '31.24' },
     { display_name: 'Invalid coordinates', lon: '200', lat: '90' },
   ] }));
@@ -67,9 +68,10 @@ test('production source build renders 3D tiles and preserves map controls and se
   await page.locator('[data-place="tokyo"]').click();
   await expect(page.locator('[data-place="tokyo"]')).toHaveClass('active');
   if (process.env.ATLAS_TEST_PAGES === '1') {
-    const apiBase = (process.env.VITE_API_BASE_URL || 'https://api.atlas.test').replace(/\/+$/, '');
-    expect(requestUrls.some(url => url.startsWith(`${apiBase}/api/tiles/`))).toBe(true);
-    expect(requestUrls.some(url => url.startsWith(`${apiBase}/api/geocode?`))).toBe(true);
+    expect(requestUrls.some(url => url.startsWith('https://tiles.streets.gl/vector/16/'))).toBe(true);
+    expect(requestUrls.some(url => url.startsWith('https://nominatim.openstreetmap.org/search?'))).toBe(true);
+    expect(requestUrls.filter(url => new URL(url).hostname.endsWith('.workers.dev'))).toEqual([]);
+    expect(requestUrls.filter(url => new URL(url).pathname.startsWith('/api/'))).toEqual([]);
     const escapedAssets = requestUrls.filter(url => /^http:\/\/127\.0\.0\.1:4174\/(?:assets\/|models(?:\/|\.bin)|textures\/|style\.json)/.test(url));
     if ((process.env.VITE_BASE_PATH || '/atlas-world-map/') !== '/') expect(escapedAssets).toEqual([]);
   }

@@ -1,4 +1,6 @@
-# GitHub Pages 适配设计
+# GitHub Pages 适配设计（历史方案）
+
+此方案已被用户后续确认的[两个平台独立部署](../../独立部署说明.md)替代。以下仅保留设计记录，不作为当前部署配置。
 
 用户已选择 Pages 前端 + Cloudflare API，沿用 https://atlas-world-map-20261116.weirdopursuer.workers.dev；保留本地开发、Node 启动与完整 Cloudflare 部署。测试后提交并推送当前仓库。
 

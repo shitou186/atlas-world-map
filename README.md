@@ -61,7 +61,7 @@ prepare-cloudflare.mjs   Cloudflare 部署文件生成
 - 页面结构、样式、应用算法和三维素材依据用户指定参考站的公开页面整理。
 - MapLibre、Three.js、SunCalc、Earcut、几何裁剪、矢量瓦片与屋顶骨架算法通过固定版本 npm 依赖提供，版本见 `package.json` 和 `pnpm-lock.yaml`。
 - 构建阶段不请求原站或下载地图数据；首次安装依赖需要访问包仓库。
-- 运行时矢量底图、字体与图标由 OpenFreeMap 提供；街区数据经服务端转发到 Streets GL，地点搜索使用 Nominatim，均需联网。
+- 运行时矢量底图、字体与图标由 OpenFreeMap 提供；街区数据来自 Streets GL，地点搜索使用 Nominatim；本地与 Cloudflare 经本站代理，Pages 由浏览器直连数据源，均需联网。
 - 保留 OpenStreetMap 与 Streets GL 署名；不包含独立地图数据库或参考站未公开的后台。
 
 ## 部署到自己的 Cloudflare 账号
@@ -76,12 +76,17 @@ pnpm run deploy
 
 ## 发布到 GitHub Pages
 
-Pages 只托管静态前端，瓦片与搜索由已有 Cloudflare Worker 提供：
+两个平台可以独立部署，各自运行，不相互调用前端或 API：
 
-- Pages 地址：<https://shitou186.github.io/atlas-world-map/>
-- 默认 API：<https://atlas-world-map-20261116.weirdopursuer.workers.dev>
+| 部署目标 | 前端托管 | 瓦片和搜索请求 |
+| --- | --- | --- |
+| GitHub Pages | Pages 静态资源 | 浏览器直接访问 Streets GL 和 Nominatim，不访问 Cloudflare |
+| Cloudflare Workers | 当前 Worker 的 Static Assets | 当前站点 `/api/...` 由自己的 Worker 转发，不访问 Pages |
+| 本地开发 / 生产服务 | Vite / Node | 当前站点 `/api/...` 由 Vite / Node 转发 |
 
-首次启用时，在 GitHub 仓库 **Settings → Pages → Build and deployment → Source** 选择 **GitHub Actions**。工作流位于 [`.github/workflows/pages.yml`](./.github/workflows/pages.yml)，推送 `main` 或在 Actions 中手动运行后，会安装固定版本 pnpm 和 Node.js 22、执行测试、构建纯静态产物并发布。默认不需要填写额外 Token。
+Pages 地址：<https://shitou186.github.io/atlas-world-map/>。Pages 本身不能运行服务端代理，因此它使用数据源提供的浏览器跨域访问能力；三维地图、地点搜索及其他交互保留。两种部署都需要访问公共地图数据源，并非离线站点。
+
+首次启用时，在 GitHub 仓库 **Settings → Pages → Build and deployment → Source** 选择 **GitHub Actions**。工作流位于 [`.github/workflows/pages.yml`](./.github/workflows/pages.yml)，推送 `main` 或在 Actions 中手动运行后，会安装固定版本 pnpm 和 Node.js 22、执行测试、构建纯静态产物并发布。不需要 Cloudflare 凭据或外部 API 地址。
 
 Pages 使用独立构建模式：
 
@@ -90,36 +95,17 @@ pnpm build:pages
 pnpm preview:pages
 ```
 
-本地预览访问 <http://localhost:4173/atlas-world-map/>。输出仍在 `dist/`，包含模型、纹理、Worker、动态模块和 `/osm/` 兼容入口，不生成 Node 服务或 Cloudflare 部署目录。执行 `pnpm start`、`pnpm build` 或 `pnpm run deploy` 时，会重新构建根路径版本。
+本地预览访问 <http://localhost:4173/atlas-world-map/>。输出仍在 `dist/`，包含模型、纹理、几何 Worker、动态模块和 `/osm/` 兼容入口，不生成 Node 服务或 Cloudflare 部署目录。执行 `pnpm start`、`pnpm build` 或 `pnpm run deploy` 时，会重新构建根路径版本。
 
-可在仓库 **Settings → Secrets and variables → Actions → Variables** 配置以下公开变量：
-
-| 变量 | 默认行为 | 用途 |
-| --- | --- | --- |
-| `VITE_API_BASE_URL` | 沿用上面的 Worker 地址 | API 服务根地址，必须为 HTTPS，不带 `/api` 后缀；可包含网关路径前缀 |
-| `VITE_BASE_PATH` | 工作流读取 Pages 的实际路径 | 通常无需填写；仓库站点为 `/atlas-world-map/`，自定义域名根目录为 `/` |
-
-手动构建可通过环境变量覆盖，例如：
+通常无需配置仓库变量。工作流自动读取 Pages 的实际站点路径，支持仓库子目录及自定义域名。如果需要覆盖，可在 **Settings → Secrets and variables → Actions → Variables** 设置 `VITE_BASE_PATH`，例如 `/atlas-world-map/` 或 `/`。手动构建自定义域名根目录版本：
 
 ```bash
-VITE_BASE_PATH=/ VITE_API_BASE_URL=https://your-worker.workers.dev pnpm build:pages
+VITE_BASE_PATH=/ pnpm build:pages
 ```
 
-本机默认的 `build:pages` 使用 `/atlas-world-map/`，自动工作流则使用 GitHub Pages 返回的路径，兼容自定义域名。普通 `dev/start/build/deploy` 固定使用根路径和同源 API，不受这些 Pages 变量影响。`VITE_*` 会写入浏览器代码，不能放密钥。
+`VITE_API_BASE_URL` 已停用，遗留变量可以删除，保留也不会生效。数据访问模式由构建目标确定，避免环境变量导致两个平台混用。普通 `dev/start/build/deploy` 始终使用同源 API。
 
-### Pages 与 Worker 的跨域配置
-
-Worker 的 `CORS_ALLOWED_ORIGINS` 位于 `wrangler.jsonc`，默认允许 `https://shitou186.github.io`，以及本地 Pages 预览使用的 `http://localhost:4173`、`http://127.0.0.1:4173`。这是来源域名，**不能加 `/atlas-world-map/` 路径**。多个来源用逗号分隔；换用自定义域名或其他预览端口时需追加它的完整来源，例如 `https://maps.example.com`，并重新部署 Worker。
-
-```bash
-pnpm run deploy
-```
-
-Worker 对允许来源的 GET、HEAD、OPTIONS 返回 CORS 头，包含二进制瓦片、搜索结果和接口错误响应。同源请求及没有 Origin 头的服务端调用保留原有行为。首次发布或修改 CORS 后，应先更新这个 Worker，再使用 Pages 前端。
-
-仓库自动工作流只发布 Pages，不需要 Cloudflare 凭据，也不会自动修改 Worker。Worker 的更新仍使用现有 `pnpm run deploy` 流程。
-
-GitHub 官方的 [自定义 Pages 工作流说明](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages) 与 [Vite 部署说明](https://vite.dev/guide/static-deploy.html#github-pages) 可用于排查站点设置和部署权限。
+Cloudflare 的 `CORS_ALLOWED_ORIGINS` 默认留空，不向 Pages 或其他站点开放跨域代理；本站页面仍正常使用自己的接口。工作流只发布 Pages，Cloudflare 的更新单独运行 `pnpm run deploy`，两者不依赖对方先部署。
 
 ## 验证
 
@@ -137,4 +123,4 @@ pnpm test:browser
 
 第三方资源及地图数据署名见 [SOURCES.md](./SOURCES.md)。
 
-使用 `ATLAS_TEST_PAGES=1 pnpm test:browser` 可验证真实的 Pages 子目录静态构建：模型与纹理不越出部署目录，几何 Worker 和动态模块正常加载，瓦片与搜索使用独立 API 地址。测试通过固定数据隔离第三方服务波动。
+使用 `ATLAS_TEST_PAGES=1 pnpm test:browser` 可验证真实的 Pages 子目录静态构建：模型与纹理不越出部署目录，几何 Worker 和动态模块正常加载，瓦片与搜索直接使用数据源，并阻止对 Cloudflare Worker 的请求。测试通过固定数据隔离第三方服务波动。

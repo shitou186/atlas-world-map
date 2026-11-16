@@ -6,7 +6,7 @@ const projectRoot = fileURLToPath(new URL('./', import.meta.url));
 
 // Pages 独立构建模式，避免发布配置污染本地服务和完整 Cloudflare 站点。
 export function resolveDeployment(mode, environment = {}) {
-  if (mode !== 'pages') return { basePath: '/', apiBaseUrl: '' };
+  if (mode !== 'pages') return { basePath: '/', dataMode: 'proxy' };
   const requestedBase = (environment.VITE_BASE_PATH ?? '/atlas-world-map/').trim();
   if (
     !requestedBase.startsWith('/') ||
@@ -17,19 +17,7 @@ export function resolveDeployment(mode, environment = {}) {
     throw new Error('VITE_BASE_PATH 必须是以 / 开头的站点路径，例如 /atlas-world-map/ 或 /。');
   }
   const basePath = requestedBase.replace(/\/+$/, '') + '/';
-  const requestedApi = (
-    environment.VITE_API_BASE_URL ?? 'https://atlas-world-map-20261116.weirdopursuer.workers.dev'
-  ).trim();
-  let api;
-  try {
-    api = new URL(requestedApi);
-  } catch {
-    throw new Error('VITE_API_BASE_URL 必须是有效的 HTTPS API 根地址。');
-  }
-  if (api.protocol !== 'https:' || api.username || api.password || api.search || api.hash) {
-    throw new Error('VITE_API_BASE_URL 必须使用 HTTPS，且不能包含凭据、查询参数或片段。');
-  }
-  return { basePath, apiBaseUrl: api.href.replace(/\/+$/, '') };
+  return { basePath, dataMode: 'direct' };
 }
 
 export default defineConfig(({ mode }) => {
@@ -37,7 +25,7 @@ export default defineConfig(({ mode }) => {
   const deployment = resolveDeployment(mode, environment);
   return {
     base: deployment.basePath,
-    define: { 'import.meta.env.VITE_API_BASE_URL': JSON.stringify(deployment.apiBaseUrl) },
+    define: { 'import.meta.env.VITE_DATA_MODE': JSON.stringify(deployment.dataMode) },
     server: { host: '0.0.0.0', port: 5173, proxy: createDevProxy() },
     build: { target: 'es2022', sourcemap: true, emptyOutDir: true },
     worker: { format: 'es' },

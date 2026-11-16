@@ -1,4 +1,6 @@
-# GitHub Pages Implementation Plan
+# GitHub Pages Implementation Plan（历史记录）
+
+后续部署隔离调整见[两个平台独立部署](../../独立部署说明.md)。外部 Cloudflare API 配置已停用，此处保留原实施和验证记录。
 
 Goal: publish the static frontend under a repository prefix while retaining local and Cloudflare hosting.
 

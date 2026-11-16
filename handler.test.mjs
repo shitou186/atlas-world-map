@@ -148,12 +148,12 @@ test('CORS configuration leaves static assets unchanged', async () => {
   assert.equal(await response.text(), '<html>Atlas</html>');
 });
 
-test('默认 Worker 配置允许 Pages 和本地静态预览来源', async () => {
+test('默认 Worker 配置不为 Pages 或其他站点提供跨平台代理', async () => {
   const config = JSON.parse(await readFile(new URL('./wrangler.jsonc', import.meta.url), 'utf8'));
   const { app } = await runtime();
   for (const origin of [pagesOrigin, 'http://localhost:4173', 'http://127.0.0.1:4173']) {
     const response = await app.fetch(new Request(tileUrl, { headers: { Origin: origin } }), config.vars);
-    assert.equal(response.status, 200, origin);
-    assert.equal(response.headers.get('Access-Control-Allow-Origin'), origin);
+    assert.equal(response.status, 403, origin);
+    assert.equal(response.headers.get('Access-Control-Allow-Origin'), null);
   }
 });

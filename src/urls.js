@@ -1,15 +1,30 @@
-// 静态资源跟随页面部署目录，API 始终使用单独配置的服务根地址。
-export function createUrlResolvers({ baseUrl = '/', apiBaseUrl = '' } = {}) {
+// Pages 无服务端运行环境，直接访问支持 CORS 的数据源；其他部署使用本站代理。
+export function createUrlResolvers({ baseUrl = '/', dataMode = 'proxy' } = {}) {
   const assetBaseUrl = baseUrl.replace(/\/+$/, '');
-  const apiRootUrl = apiBaseUrl.replace(/\/+$/, '');
+  if (!['proxy', 'direct'].includes(dataMode)) throw new Error('不支持的数据访问模式');
   return {
     assetUrl: (path) => `${assetBaseUrl}/${path.replace(/^\/+/, '')}`,
-    apiUrl: (path) => `${apiRootUrl}/${path.replace(/^\/+/, '')}`,
+    apiUrl: (path) => {
+      const normalizedPath = '/' + path.replace(/^\/+/, '');
+      if (dataMode === 'proxy') return normalizedPath;
+      const tileMatch = /^\/api\/tiles\/16\/(\d+)\/(\d+)$/.exec(normalizedPath);
+      if (tileMatch) return `https://tiles.streets.gl/vector/16/${tileMatch[1]}/${tileMatch[2]}`;
+      const [pathname, query = ''] = normalizedPath.split('?');
+      if (pathname === '/api/geocode') {
+        // 只透传搜索词，固定格式、数量和语言，与本地/Cloudflare 代理保持一致。
+        const parameters = new URLSearchParams({
+          q: new URLSearchParams(query).get('q') || '',
+          format: 'jsonv2', limit: '5', 'accept-language': 'zh-CN',
+        });
+        return `https://nominatim.openstreetmap.org/search?${parameters}`;
+      }
+      throw new Error(`不支持的直连接口：${pathname}`);
+    },
   };
 }
 
-// Node 测试环境没有 Vite 的 import.meta.env，默认保留同源根目录行为。
+// 模式由构建目标确定，遗留的外部 API 地址配置不再参与请求路由。
 export const { assetUrl, apiUrl } = createUrlResolvers({
   baseUrl: import.meta.env?.BASE_URL || '/',
-  apiBaseUrl: import.meta.env?.VITE_API_BASE_URL || '',
+  dataMode: import.meta.env?.VITE_DATA_MODE || 'proxy',
 });

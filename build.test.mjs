@@ -72,7 +72,9 @@ test('Pages 从干净源码构建子目录静态站点，API 独立且不包含 
     const names = await readdir(path.join(temporary, 'dist/assets'));
     assert.ok(names.some(name => /geometry.*\.js$/.test(name)));
     const scripts = await Promise.all(names.filter(name => name.endsWith('.js')).map(name => readFile(path.join(temporary, 'dist/assets', name), 'utf8')));
-    assert.ok(scripts.some(script => script.includes('https://api.atlas.test/gateway')));
+    assert.ok(scripts.some(script => script.includes('https://tiles.streets.gl/vector/16/')));
+    assert.ok(scripts.some(script => script.includes('https://nominatim.openstreetmap.org/search?')));
+    assert.ok(scripts.every(script => !script.includes('api.atlas.test') && !script.includes('workers.dev')));
     assert.deepEqual(await readFile(path.join(temporary, 'dist/models.bin')), await readFile(path.join(temporary, 'public/models.bin')));
   } finally { await rm(temporary, { recursive: true, force: true }); }
 });

@@ -28,7 +28,6 @@ export default defineConfig({
       ...(pagesMode
         ? {
             VITE_BASE_PATH: pagesBase,
-            VITE_API_BASE_URL: process.env.VITE_API_BASE_URL || 'https://api.atlas.test',
           }
         : {}),
     },
