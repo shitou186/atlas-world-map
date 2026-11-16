@@ -21,3 +21,5 @@ Delivery: commit and push the verified adaptation; inspect the automatic workflo
 - CLI rollout correction: use `pnpm run deploy`; `pnpm deploy` is pnpm's built-in workspace deployment command.
 
 - Existing Worker updated successfully (version e926db3c-f0b9-462d-8459-6f3bf1ca287b). Live root site, Pages/local-preview OPTIONS, binary tile GET and Chinese geocode GET passed; unlisted origin returns 403.
+
+- CI follow-up: Node22 uses `--experimental-test-isolation=none`; the stable flag name is only accepted on newer Node releases. Updated the shared test script and verified with the installed Node22 runtime before retrying deployment.
