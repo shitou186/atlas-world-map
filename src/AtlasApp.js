@@ -7,6 +7,7 @@ import { TrainAssets } from './models/TrainAssets.js';
 import { BoatAssets } from './models/BoatAssets.js';
 import { TileScheduler } from './map/TileScheduler.js';
 import { assetUrl, apiUrl } from './urls.js';
+import { basemapOptions, resolveLocalStyleUrls } from './map/basemap.js';
 class AtlasApp {
   constructor() {
     this.mobile = matchMedia('(max-width: 900px)');
@@ -22,6 +23,18 @@ class AtlasApp {
           ?.classList.remove('maplibregl-compact-show');
       }
     });
+    this.basemap = basemapOptions(location.href);
+    const basemapSelect = document.querySelector('#basemap-mode');
+    basemapSelect.value = this.basemap.local ? 'local' : 'online';
+    document.querySelector('#basemap-hint').hidden = !this.basemap.local;
+    basemapSelect.querySelector('[value="local"]').disabled = !this.basemap.available;
+    basemapSelect.addEventListener('change', () => {
+      const url = new URL(location.href);
+      url.searchParams.set('basemap', basemapSelect.value);
+      // 切换时清除旧城市 hash，让本地模式从武汉开始，且不自动回源。
+      url.hash = '';
+      location.assign(url.href);
+    });
     this.scene = new MapScene();
     this.places = {
       paris: [2.3355, 48.8475],
@@ -30,6 +43,7 @@ class AtlasApp {
       newyork: [-73.9914, 40.7303],
       tokyo: [139.768, 35.681],
       shanghai: [121.489, 31.239],
+      wuhan: [114.3055, 30.5928],
     };
     this.start().catch((startupError) =>
       this.status(`\u5730\u56FE\u8FDE\u63A5\u5931\u8D25\uFF1A${startupError.message}`, 'error'),
@@ -37,15 +51,16 @@ class AtlasApp {
   }
   async start() {
     const [styleResponse, profileModule] = await Promise.all([
-      fetch(assetUrl('/style.json')),
+      fetch(this.basemap.styleUrl || assetUrl('/style.json')),
       new URLSearchParams(location.search).has('profile')
         ? import('./diagnostics/InteractionMetrics.js')
         : null,
     ]);
     if (!styleResponse.ok) {
-      throw new Error('底图样式不可用');
+      throw new Error(this.basemap.local ? '武汉本地底图不可用，请先运行 pnpm maps:download 和 pnpm maps:serve' : '底图样式不可用');
     }
-    const style = await styleResponse.json();
+    const downloadedStyle = await styleResponse.json();
+    const style = this.basemap.local ? resolveLocalStyleUrls(downloadedStyle, location.href) : downloadedStyle;
     for (const styleLayer of style.layers) {
       if (styleLayer.type === 'fill-extrusion') {
         styleLayer.layout = {
@@ -63,7 +78,8 @@ class AtlasApp {
     this.map = new maplibregl.Map({
       container: 'map',
       style: style,
-      center: this.places.shanghai,
+      center: this.basemap.center || this.places.shanghai,
+      maxBounds: this.basemap.bounds || undefined,
       zoom: 16.8,
       pitch: 56,
       bearing: -28,
@@ -227,6 +243,11 @@ class AtlasApp {
       }
     });
     for (const placeButton of document.querySelectorAll('[data-place]')) {
+      if (this.basemap.local) {
+        placeButton.classList.toggle('active', placeButton.dataset.place === 'wuhan');
+        placeButton.disabled = placeButton.dataset.place !== 'wuhan';
+        if (placeButton.disabled) placeButton.title = '请切换在线底图后查看其他城市';
+      }
       placeButton.addEventListener('click', () => {
         for (const candidateButton of document.querySelectorAll('[data-place]')) {
           candidateButton.classList.toggle('active', candidateButton === placeButton);

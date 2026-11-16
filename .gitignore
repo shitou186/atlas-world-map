@@ -11,3 +11,6 @@ playwright-report/
 .dev.vars
 .dev.vars.*
 *.log
+
+map-data/
+.tools/

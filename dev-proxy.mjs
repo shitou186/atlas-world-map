@@ -4,6 +4,7 @@ const userAgent = 'AtlasMapReplica/1.0 (+https://atlas-world-map-replica.weirdop
 export function createDevProxy({
   tiles = 'https://tiles.streets.gl',
   geocode = 'https://nominatim.openstreetmap.org',
+  localMap = `http://127.0.0.1:${process.env.LOCAL_MAP_PORT || 8081}`,
 } = {}) {
   const options = (target, accept, rewrite) => ({
     target,
@@ -22,6 +23,15 @@ export function createDevProxy({
   });
 
   return {
+    '/local-map': {
+      target: localMap,
+      rewrite: path => path.replace(/^\/local-map/, ''),
+      configure(proxy) {
+        proxy.on('error', (_error, _request, response) => {
+          if (!response.headersSent) response.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8' }).end('武汉地图服务不可用，请先运行 pnpm maps:download 和 pnpm maps:serve');
+        });
+      },
+    },
     '^/api/tiles/16/\\d{1,5}/\\d{1,5}(?:\\?.*)?$': options(
       tiles,
       'application/octet-stream',

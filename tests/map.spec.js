@@ -96,3 +96,33 @@ test('mobile settings, search and Escape preserve responsive behavior', async ({
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: 'test-results/atlas-mobile.png' });
 });
+
+test('Wuhan local basemap stays on local resources and can switch back online', async ({ page }) => {
+  test.skip(process.env.ATLAS_TEST_PAGES === '1', 'Local map service is for local Node and Vite hosting');
+  const requests = [];
+  page.on('request', request => requests.push(request.url()));
+  await mockMapServices(page);
+  await page.route('**/local-map/style.json', route => route.fulfill({ json: {
+    version: 8,
+    sources: { openmaptiles: { type: 'vector', tiles: ['http://127.0.0.1:4174/local-map/tiles/{z}/{x}/{y}.mvt'], maxzoom: 14 } },
+    layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#edece5' } }],
+  } }));
+  await page.route('**/local-map/tiles/**', route => route.fulfill({ body: Buffer.alloc(0), contentType:'application/x-protobuf' }));
+  await page.route('https://*.openfreemap.org/**', route => route.abort());
+  await page.goto('./?basemap=local&profile');
+  await expect(page.locator('#basemap-mode')).toHaveValue('local');
+  await expect(page.locator('[data-place="wuhan"]')).toHaveClass('active');
+  await expect(page.locator('[data-place="paris"]')).toBeDisabled();
+  await expect.poll(async () => Number(await page.locator('#building-count').textContent()), {timeout:45000}).toBeGreaterThan(0);
+  expect(requests.some(url => url.includes('/local-map/tiles/14/'))).toBe(true);
+  expect(requests.some(url => url.includes('/api/tiles/16/'))).toBe(true);
+  expect(requests.filter(url => new URL(url).hostname.endsWith('openfreemap.org'))).toEqual([]);
+  await page.locator('#location').fill('武汉');
+  await page.locator('#location-form').evaluate(form => form.requestSubmit());
+  await expect(page.locator('#location-options button')).toHaveCount(1);
+  expect(requests.some(url => url.includes('/api/geocode?'))).toBe(true);
+  await page.locator('#basemap-mode').selectOption('online');
+  await expect(page).toHaveURL(/basemap=online/);
+  await expect(page.locator('#basemap-mode')).toHaveValue('online');
+  await expect(page.locator('[data-place="paris"]')).toBeEnabled();
+});

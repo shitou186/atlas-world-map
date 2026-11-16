@@ -35,6 +35,12 @@
       </div>
       <div class="settings-content">
       <p class="intro">沿街道漫游，观察建筑、屋顶与日光。</p>
+      <label for="basemap-mode">底图数据</label>
+      <select id="basemap-mode" aria-label="底图数据">
+        <option value="online">在线底图</option>
+        <option value="local">武汉本地底图</option>
+      </select>
+      <p id="basemap-hint" class="intro" hidden>本地底图覆盖武汉及周边；三维数据和搜索仍需联网。</p>
       <div class="places" aria-label="城市导航">
         <button data-place="paris">巴黎</button>
         <button data-place="berlin">柏林</button>
@@ -42,6 +48,7 @@
         <button data-place="newyork">纽约</button>
         <button data-place="tokyo">东京</button>
         <button data-place="shanghai" class="active">上海</button>
+        <button data-place="wuhan">武汉</button>
       </div>
       <div class="divider"></div>
       <div class="section-label">俯仰角 <output id="pitch-label" for="map-pitch">56°</output></div>

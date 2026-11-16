@@ -26,7 +26,7 @@ test('Vite serves source and proxies binary tiles and Chinese search queries', {
     const target = `http://127.0.0.1:${upstream.address().port}`;
     vite = await createServer({
       configFile: false,
-      server: { host: '127.0.0.1', port: 0, proxy: createDevProxy({ tiles: target, geocode: target }) },
+      server: { host: '127.0.0.1', port: 0, proxy: createDevProxy({ tiles: target, geocode: target, localMap: target }) },
     });
     await vite.listen();
     const base = `http://127.0.0.1:${vite.httpServer.address().port}`;
@@ -36,6 +36,9 @@ test('Vite serves source and proxies binary tiles and Chinese search queries', {
     const source = await fetch(`${base}/src/main.js`);
     assert.equal(source.status, 200);
     assert.match(await source.text(), /AtlasApp/);
+    const localStyle = await fetch(`${base}/local-map/style.json`);
+    assert.equal(localStyle.status, 200);
+    assert.equal(requests.shift().url, '/style.json');
     const tileResponse = await fetch(`${base}/api/tiles/16/54884/26776`);
     assert.equal(tileResponse.status, 200);
     assert.equal(tileResponse.headers.get('x-tile-cache'), 'HIT');

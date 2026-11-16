@@ -12,7 +12,7 @@ const root = fileURLToPath(new URL('./', import.meta.url));
 
 test('a clean source copy rebuilds frontend, Worker, models, Node and Cloudflare outputs', { timeout: 120000 }, async () => {
   const temporary = await mkdtemp(path.join(tmpdir(), 'atlas-clean-build-'));
-  const excluded = new Set(['dist', 'cloudflare', 'node_modules', '.git', '.wrangler', '.openai', '.sites-runtime', 'test-results', 'playwright-report']);
+  const excluded = new Set(['dist', 'cloudflare', 'node_modules', '.git', '.wrangler', '.openai', '.sites-runtime', 'test-results', 'playwright-report', 'map-data', '.tools']);
   try {
     await cp(root, temporary, {
       recursive: true,
@@ -52,7 +52,7 @@ test('a clean source copy rebuilds frontend, Worker, models, Node and Cloudflare
 
 test('Pages 从干净源码构建子目录静态站点，API 独立且不包含 Node/Cloudflare 运行文件', { timeout: 120000 }, async () => {
   const temporary = await mkdtemp(path.join(tmpdir(), 'atlas-pages-build-'));
-  const excluded = new Set(['dist', 'cloudflare', 'node_modules', '.git', '.wrangler', '.openai', '.sites-runtime', 'test-results', 'playwright-report']);
+  const excluded = new Set(['dist', 'cloudflare', 'node_modules', '.git', '.wrangler', '.openai', '.sites-runtime', 'test-results', 'playwright-report', 'map-data', '.tools']);
   try {
     await cp(root, temporary, { recursive: true, filter: source => !excluded.has(path.relative(root, source).split(path.sep)[0]) });
     await symlink(path.join(root, 'node_modules'), path.join(temporary, 'node_modules'), 'dir');

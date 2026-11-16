@@ -1,9 +1,11 @@
 import http from 'node:http';
 import app from './dist/server/index.js';
+import { forwardRequest } from './scripts/local-map-proxy.mjs';
 
 const port = Number(process.env.PORT || 4173);
 const server = http.createServer(async (req, res) => {
   try {
+    if (req.url.startsWith('/local-map/')) return forwardRequest(req, res, { port: Number(process.env.LOCAL_MAP_PORT || 8081), pathname: req.url.slice('/local-map'.length) });
     const response = await app.fetch(new Request(`http://localhost:${port}${req.url}`, { method: req.method }));
     res.writeHead(response.status, Object.fromEntries(response.headers));
     if (response.body) for await (const chunk of response.body) res.write(chunk);

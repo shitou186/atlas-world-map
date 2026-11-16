@@ -124,3 +124,58 @@ pnpm test:browser
 第三方资源及地图数据署名见 [SOURCES.md](./SOURCES.md)。
 
 使用 `ATLAS_TEST_PAGES=1 pnpm test:browser` 可验证真实的 Pages 子目录静态构建：模型与纹理不越出部署目录，几何 Worker 和动态模块正常加载，瓦片与搜索直接使用数据源，并阻止对 Cloudflare Worker 的请求。测试通过固定数据隔离第三方服务波动。
+
+## 武汉本地底图、绿地、字体和图标
+
+在线模式保持默认。武汉本地模式只替换 OpenFreeMap 数据：**三维建筑、道路等仍使用 Streets GL，地点搜索仍使用现有 Nominatim 服务，需要联网**。
+
+支持 Linux / WSL x64、arm64 自动安装固定版本 PMTiles 工具（1.31.2，SHA-256 校验），需要 Node.js、`curl` 和 `tar`。其他系统可以自行安装 [PMTiles CLI](https://github.com/protomaps/go-pmtiles/releases)，并用 `PMTILES_BIN` 指向可执行文件。
+
+首次下载：
+
+```bash
+pnpm maps:download
+```
+
+脚本从 OpenFreeMap 官方索引选择带 `done` 标记的最新全球 PMTiles，仅提取武汉示例区域的 z0–14 瓦片；然后下载官方字体、图标和 Natural Earth 背景包，生成使用本地 URL 的样式和来源记录。区域矩形为 **113.7°E–115.1°E、29.9°N–31.4°N**，覆盖武汉及周边，不是精确行政边界。高缩放级别使用 z14 底图放大，三维仍使用原有 z16 数据。
+
+数据保存到 `map-data/wuhan/`，工具保存到 `.tools/`。这两个目录均被 Git 忽略，不进入前端构建或 Pages/Cloudflare 部署。重复下载会复用已完成的数据与资源包，未完成的资源下载可断点重试；区域提取失败后会重新提取。想更新地图版本时，停止本地服务，删除 `map-data/wuhan/wuhan.pmtiles` 后重新下载。若进程被强制结束留下 `.download-lock`，确认没有下载任务后可删除该锁目录再重试。
+
+启动数据服务（终端一）：
+
+```bash
+pnpm maps:serve
+```
+
+启动项目（终端二）：
+
+```bash
+pnpm dev
+```
+
+打开 <http://localhost:5173/?basemap=local>，默认定位武汉。设置面板的“底图数据”可切换“在线底图 / 武汉本地底图”，切换会刷新页面。直接访问 <http://localhost:5173/?basemap=online> 使用原有在线模式。生产服务也支持：运行 `pnpm start`，访问 <http://localhost:4173/?basemap=local>。
+
+本地模式限制地图范围在武汉示例矩形内，其他城市快捷按钮暂时禁用，切换回在线即可恢复。搜索仍由在线服务处理；超出本地范围的地点不能在该底图模式下浏览。缺少本地包或未启动服务时会明确提示，不自动请求在线 OpenFreeMap 补齐。该本地模式仅在 `localhost`、`127.0.0.1`、`[::1]` 启用，已部署的 Pages/Cloudflare 保持在线，Pages 本机静态预览也不提供本地地图模式。
+
+数据服务默认监听 `127.0.0.1:8081`，内部 PMTiles 服务监听 `127.0.0.1:8082`。Vite/Node 通过同源 `/local-map/` 转发，浏览器无需另配 CORS。端口冲突时可设置 `LOCAL_MAP_PORT` 和 `LOCAL_MAP_TILE_PORT`；项目启动终端需要设置相同的 `LOCAL_MAP_PORT`。`LOCAL_MAP_DATA` 可以指定其他数据目录，下载和服务终端须保持一致。
+
+```bash
+# 自定义示例：终端一
+LOCAL_MAP_PORT=8181 LOCAL_MAP_TILE_PORT=8182 pnpm maps:serve
+# 终端二
+LOCAL_MAP_PORT=8181 pnpm dev
+```
+
+本地接口示例（通过开发服务访问）：
+
+```text
+/local-map/style.json
+/local-map/manifest.json
+/local-map/tiles/{z}/{x}/{y}.mvt
+/local-map/fonts/ofm/{fontstack}/{range}.pbf
+/local-map/sprites/ofm_f384/ofm.json
+/local-map/sprites/ofm_f384/ofm.png
+/local-map/natural_earth/ofm/ne2sr/{z}/{x}/{y}.png
+```
+
+字体与背景采用官方完整资源包，不只缓存当前屏幕，因此中文字符及缩小地图所需资源可以本地加载。地图及素材下载来源、范围和时间记录在 `manifest.json`。本次示例区域瓦片约 48MB，含完整资源包及下载缓存约占 864MB（版本变化会影响大小）。请保留生成目录外的 `map-data`；删除 `dist` 后重新构建不会删除地图包。首次下载需要联网，后续本地底图请求只读磁盘；地图数据署名继续保留。

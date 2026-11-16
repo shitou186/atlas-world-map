@@ -6,11 +6,13 @@
     "dev": "vite",
     "start": "node build.mjs && node server.mjs",
     "build": "node build.mjs && node prepare-cloudflare.mjs",
-    "test": "node build.mjs && node prepare-cloudflare.mjs && node --test --experimental-test-isolation=none handler.test.mjs source.test.mjs build.test.mjs dev.test.mjs urls.test.mjs pages.test.mjs",
+    "test": "node build.mjs && node prepare-cloudflare.mjs && node --test --experimental-test-isolation=none handler.test.mjs source.test.mjs build.test.mjs dev.test.mjs urls.test.mjs pages.test.mjs local-map.test.mjs",
     "deploy": "node build.mjs && node prepare-cloudflare.mjs && wrangler deploy",
     "test:browser": "playwright test",
     "build:pages": "node build-pages.mjs",
-    "preview:pages": "vite preview --mode pages"
+    "preview:pages": "vite preview --mode pages",
+    "maps:download": "node scripts/download-local-map.mjs",
+    "maps:serve": "node scripts/serve-local-map.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.65.1",
