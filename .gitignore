@@ -3,7 +3,9 @@ node_modules/
 .openai/
 .sites-runtime/
 cloudflare/
-dist/server/
+dist/
+test-results/
+playwright-report/
 .env
 .env.*
 .dev.vars

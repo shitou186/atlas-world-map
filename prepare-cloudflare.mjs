@@ -1,6 +1,7 @@
-import { mkdir, cp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, cp, readFile, writeFile, rm } from 'node:fs/promises';
 
 const root = new URL('./cloudflare/', import.meta.url);
+await rm(root, { recursive: true, force: true });
 await mkdir(new URL('assets/', root), { recursive: true });
 await cp(new URL('./dist/', import.meta.url), new URL('assets/', root), {
   recursive: true,

@@ -1,5 +1,10 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { build } from 'vite';
+import { fileURLToPath } from 'node:url';
+
+// dist is generated exclusively from index.html, src/, public/ and npm dependencies.
+await build({ root: fileURLToPath(new URL('./', import.meta.url)) });
 
 const root = new URL('./dist/', import.meta.url);
 const assets = {};
@@ -17,4 +22,4 @@ await collect(root);
 const handler = await readFile(new URL('./handler.mjs', import.meta.url), 'utf8');
 await mkdir(new URL('server/', root), { recursive: true });
 await writeFile(new URL('server/index.js', root), `const assets = ${JSON.stringify(assets)};\n${handler}`);
-console.log(`Packaged ${Object.keys(assets).length} original assets.`);
+console.log(`Packaged ${Object.keys(assets).length} built assets.`);

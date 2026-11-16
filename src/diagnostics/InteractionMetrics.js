@@ -1,0 +1,141 @@
+// Reconstructed from the existing Atlas page; see SOURCES.md for provenance.
+class InteractionMetrics {
+  constructor(e, r) {
+    this.map = e;
+    this.scene = r;
+    this.samples = [];
+    this.tasks = [];
+    this.startup = {
+      mapCreatedMs: performance.now(),
+    };
+    for (const s of ['style.load', 'load']) {
+      e.once(s, () => {
+        this.startup[s] = performance.now();
+        this.startup.resources = performance
+          .getEntriesByType('resource')
+          .filter((t) => !t.name.includes('/src/') && !t.name.includes('/node_modules/'))
+          .map((t) => ({
+            url: t.name,
+            startMs: t.startTime,
+            durationMs: t.duration,
+            bytes: t.transferSize,
+          }));
+        e.getCanvas().dataset.startupMetrics = JSON.stringify(this.startup);
+      });
+    }
+    this.output = document.createElement('output');
+    this.output.id = 'interaction-metrics';
+    this.output.hidden = !0;
+    document.body.append(this.output);
+    e.getCanvas().addEventListener(
+      'mousedown',
+      () => {
+        this.pressed = !0;
+        this.begin();
+      },
+      !0,
+    );
+    document.addEventListener(
+      'mouseup',
+      () => {
+        this.pressed = !1;
+        this.finish();
+      },
+      !0,
+    );
+    for (const s of ['movestart', 'moveend', 'dragstart', 'dragend', 'resize', 'click']) {
+      e.on(s, (t) => {
+        if (s === 'movestart') {
+          this.begin();
+        }
+        this.record(s, {
+          original: t.originalEvent?.type,
+        });
+        if (s === 'moveend') {
+          this.finish();
+        }
+      });
+    }
+    e.on('render', () => {
+      if (!this.current || this.current.frames.length >= 4096) {
+        return;
+      }
+      const s = performance.now();
+      if (this.lastFrame) {
+        this.current.frames.push(s - this.lastFrame);
+      }
+      this.lastFrame = s;
+      this.current.sceneCpu.push(r.lastRenderCpuMs || 0);
+    });
+    if (PerformanceObserver.supportedEntryTypes.includes('longtask')) {
+      this.observer = new PerformanceObserver((s) => {
+        for (const t of s.getEntries()) {
+          this.tasks.push({
+            start: t.startTime,
+            duration: t.duration,
+          });
+        }
+        this.tasks = this.tasks.slice(-80);
+      });
+      this.observer.observe({
+        type: 'longtask',
+        buffered: !1,
+      });
+    }
+  }
+  begin() {
+    clearTimeout(this.timer);
+    if (!this.current) {
+      this.lastFrame = 0;
+      this.current = {
+        start: performance.now(),
+        center: this.map.getCenter().toArray(),
+        frames: [],
+        sceneCpu: [],
+        events: [],
+        shadows: this.scene.shadowCount,
+      };
+    }
+  }
+  record(e, r = {}) {
+    if (this.current && this.current.events.length < 512) {
+      this.current.events.push({
+        name: e,
+        time: performance.now() - this.current.start,
+        ...r,
+      });
+    }
+  }
+  finish() {
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      if (!this.current || this.pressed || this.map.isMoving()) {
+        return;
+      }
+      const e = this.current;
+      this.current = null;
+      const r = e.frames.slice().sort((t, i) => t - i);
+      const s = e.sceneCpu.slice().sort((t, i) => t - i);
+      e.summary = {
+        frameCount: r.length,
+        p50: r[Math.floor(r.length * 0.5)] || 0,
+        p95: r[Math.floor(r.length * 0.95)] || 0,
+        max: r.at(-1) || 0,
+        over50: r.filter((t) => t > 50).length,
+        cpuP95: s[Math.floor(s.length * 0.95)] || 0,
+        shadows: this.scene.shadowCount - e.shadows,
+      };
+      e.endCenter = this.map.getCenter().toArray();
+      e.longTasks = this.tasks.filter((t) => t.start >= e.start);
+      this.samples.push(e);
+      this.samples = this.samples.slice(-12);
+      this.output.textContent = JSON.stringify({
+        width: this.map.getCanvas().width,
+        height: this.map.getCanvas().height,
+        pixelRatio: this.map.getPixelRatio(),
+        samples: this.samples,
+      });
+    }, 250);
+  }
+}
+export { InteractionMetrics };
